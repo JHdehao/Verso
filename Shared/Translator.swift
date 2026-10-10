@@ -83,6 +83,16 @@ actor Translator {
         return (results, missing)
     }
 
+    /// 预热：页面一判定要翻就调用，先把扩展进程叫醒、建好会话、翻一个词让模型加载，第一批正文不用再等冷启动
+    func warm(source: String?, target: String, fluent: Bool) async {
+        guard let source, Self.normalized(source) != Self.normalized(target) else { return }
+        let sourceLanguage = Locale.Language(identifier: source)
+        let targetLanguage = Locale.Language(identifier: target)
+        let availability = LanguageAvailability(preferredStrategy: fluent ? .highFidelity : .lowLatency)
+        guard case .installed = await availability.status(from: sourceLanguage, to: targetLanguage) else { return }
+        _ = try? await session(source: sourceLanguage, target: targetLanguage, fluent: fluent).translate("Hello")
+    }
+
     private func translate(_ group: [TextUnit], source: String, session: TranslationSession) async -> [UnitResult] {
         let requests = group.map { TranslationSession.Request(sourceText: Self.attributed($0.runs), clientIdentifier: $0.id) }
         if let responses = try? await session.translations(from: requests) {

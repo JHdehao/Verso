@@ -9,14 +9,18 @@ const MAX_INFLIGHT = 2;
 /** 只查缓存的一批可以大得多：不过原生，只是一次 IndexedDB 读 */
 const LOOKUP_UNITS = 300;
 const TAB_KEY = 'verso:tab';
+/** 防闪烁最多隐藏这么久，原生再慢也照常显示 */
+const COVER_MS = 500;
 
 let rules: Rules;
 let pageLang: string | undefined;
+/** 本次翻译固定用开始时的页面语言做提示，中途识别出语言也不改，免得同一页的缓存键前后不一 */
+let hint: string | undefined;
 let active = false;
 let failed = 0;
 let done = 0;
 let cached = 0;
-let started = 0;
+/** 从打开页面（导航开始）算起 */
 let first: number | undefined;
 /** [总耗时, 次数] */
 const lat = { lookup: [0, 0], translate: [0, 0] };
@@ -31,6 +35,12 @@ let probeTimer: ReturnType<typeof setTimeout> | undefined;
 const cache = new Map<string, Run[]>();
 /** 发出去过的单元不再重发（跳过 / 失败的要靠重新开关或页面变化后重新切段） */
 const sent = new WeakSet<Unit>();
+/** 进入视口（不含下一屏预取区）的单元，排队时插到最前 */
+const hot = new WeakSet<Unit>();
+/** 防闪烁期间还没出结果的视口内单元，清空就显示页面 */
+const pendingHot = new Set<Unit>();
+let cover: HTMLStyleElement | undefined;
+let coverTimer: ReturnType<typeof setTimeout> | undefined;
 let inflight = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let io: IntersectionObserver | undefined;
@@ -68,6 +78,7 @@ function drop(u: Unit) {
   units.delete(u.id);
   queue.delete(u);
   probe.delete(u);
+  pendingHot.delete(u);
   forget(u);
   for (const [box, set] of byBox) if (set.delete(u) && !set.size) { byBox.delete(box); io?.unobserve(box); }
 }
@@ -77,7 +88,7 @@ const cacheMode = (): 'rw' | 'ro' | undefined =>
   !rules.settings.cache ? undefined : api.extension?.inIncognitoContext ? 'ro' : 'rw';
 
 const request = (units: UnitRequest[]) =>
-  ({ target: rules.settings.target, fluent: rules.settings.fluent, hint: pageLang, units });
+  ({ target: rules.settings.target, fluent: rules.settings.fluent, hint, units });
 
 function remember(key: string, runs: Run[]) {
   cache.set(key, runs);
@@ -88,16 +99,42 @@ function fill(u: Unit, runs: Run[], hit: boolean) {
   mute(() => apply(u, runs));
   done++;
   if (hit) cached++;
-  first ??= Math.round(performance.now() - started);
+  first ??= Math.round(performance.now());
 }
+
+/** 已确定要翻、页面还在加载时先隐藏，免得先画出原文再一闪变译文 */
+function coverPage() {
+  if (cover || !document.documentElement) return;
+  cover = document.createElement('style');
+  cover.textContent = 'html{opacity:0!important}';
+  document.documentElement.append(cover);
+  coverTimer = setTimeout(uncover, COVER_MS);
+}
+
+function uncover() {
+  clearTimeout(coverTimer);
+  cover?.remove();
+  cover = undefined;
+  pendingHot.clear();
+}
+
+/** 每批结果回来后调用：视口内的都有结果了就显示 */
+function settle(us: Iterable<Unit>) {
+  for (const u of us) pendingHot.delete(u);
+  if (cover && !pendingHot.size) uncover();
+}
+
+/** 视口内的排前面，其余保持原顺序 */
+const byHeat = (s: Set<Unit>) => [...s].sort((a, b) => +!hot.has(a) - +!hot.has(b));
 
 const timed = (k: keyof typeof lat, t0: number) => { lat[k][0] += performance.now() - t0; lat[k][1]++; };
 const avg = (k: keyof typeof lat) => (lat[k][1] ? Math.round(lat[k][0] / lat[k][1]) : undefined);
 
-function enqueue(u: Unit) {
+function enqueue(u: Unit, inView: boolean) {
+  if (inView) { hot.add(u); if (cover) pendingHot.add(u); }
   if (u.applied || sent.has(u) || !units.has(u.id)) return;
   const hit = cache.get(cacheKey(serialize(u)));
-  if (hit) return fill(u, hit, true);
+  if (hit) { fill(u, hit, true); return settle([u]); }
   if (cacheMode()) { probe.add(u); probeTimer ??= setTimeout(lookup, 10); return; }
   queue.add(u);
   timer ??= setTimeout(pump, 30);
@@ -106,7 +143,7 @@ function enqueue(u: Unit) {
 /** 先只查缓存：命中的马上回填，不陪没命中的段落等原生翻译；没命中的再进翻译队列 */
 async function lookup() {
   probeTimer = undefined;
-  const batch = [...probe].slice(0, LOOKUP_UNITS).map(u => ({ unit: u, req: { id: u.id, runs: serialize(u) } }));
+  const batch = byHeat(probe).slice(0, LOOKUP_UNITS).map(u => ({ unit: u, req: { id: u.id, runs: serialize(u) } }));
   for (const b of batch) { probe.delete(b.unit); sent.add(b.unit); }
   if (probe.size) probeTimer = setTimeout(lookup, 0);
   const t0 = performance.now();
@@ -121,6 +158,7 @@ async function lookup() {
     if (r?.runs) { remember(cacheKey(req.runs), r.runs); fill(unit, r.runs, true); }
     else if (!r) queue.add(unit); // 命中的「已是目标语言」什么都不用做
   }
+  settle(batch.filter(b => !queue.has(b.unit)).map(b => b.unit));
   if (queue.size) timer ??= setTimeout(pump, 0);
 }
 
@@ -129,7 +167,7 @@ function pump() {
   while (inflight < MAX_INFLIGHT && queue.size) {
     const batch: { unit: Unit; req: UnitRequest; key: string }[] = [];
     let chars = 0;
-    for (const u of queue) {
+    for (const u of byHeat(queue)) {
       const runs = serialize(u);
       const size = runs.reduce((n, r) => n + r.t.length, 0);
       if (batch.length && (batch.length >= BATCH_UNITS || chars + size > BATCH_CHARS)) break;
@@ -168,6 +206,7 @@ async function send(batch: { unit: Unit; req: UnitRequest; key: string }[]) {
     } else if (r.err) failed++;
   }
   if (!res.ok) failed += byId.size;
+  settle(batch.map(b => b.unit));
   if (queue.size) timer ??= setTimeout(pump, 0);
 }
 
@@ -179,12 +218,14 @@ function markDirty(n: Node) {
   const root = n.nodeType === 1 && !inlineOnly(n as Element) ? n : n.parentNode;
   if (!root) return;
   dirty.add(root);
-  dirtyTimer ??= setTimeout(rescan, 120);
+  // 页面还在加载：新段落尽快切段送翻，首屏不等整页解析完
+  dirtyTimer ??= setTimeout(rescan, document.readyState === 'loading' ? 16 : 120);
 }
 
 function rescan() {
   dirtyTimer = undefined;
-  const roots = [...dirty];
+  // 祖先也在这批里的不用单独扫（加载期间父子节点常在同一批里）
+  const roots = [...dirty].filter(r => { for (let p = r.parentNode; p; p = p.parentNode) if (dirty.has(p)) return false; return true; });
   dirty.clear();
   for (const u of [...units.values()]) if (!u.parent.isConnected) drop(u);
   for (const root of roots) {
@@ -209,13 +250,18 @@ function start() {
   if (active || !document.body) return;
   active = true;
   failed = done = cached = 0;
-  started = performance.now();
   first = undefined;
+  hint = pageLang;
   lat.lookup = [0, 0];
   lat.translate = [0, 0];
   missing.clear();
   io = new IntersectionObserver(entries => {
-    for (const e of entries) if (e.isIntersecting) for (const u of byBox.get(e.target) ?? []) enqueue(u);
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const r = e.boundingClientRect;
+      const inView = r.top < innerHeight && r.bottom > 0;
+      for (const u of byBox.get(e.target) ?? []) enqueue(u, inView);
+    }
   }, { rootMargin: '100% 0px' });
   mo = new MutationObserver(onMutations);
   mo.observe(document.body, { childList: true, subtree: true, characterData: true });
@@ -226,6 +272,7 @@ function start() {
 function stop() {
   if (!active) return;
   active = false;
+  uncover();
   io?.disconnect();
   mo?.disconnect();
   io = mo = undefined;
@@ -265,6 +312,10 @@ async function detectLanguage(): Promise<string | undefined> {
   }
 }
 
+/** 不看正文就能定下来要不要翻：手动选择、总开关、站点规则、<html lang>，或根本没有语言规则 */
+const decidable = () =>
+  !!tabChoice() || !rules.settings.auto || !!rules.sites[siteKey(location.hostname)] || !!pageLang || !rules.langs.length;
+
 function reevaluate(restart = false) {
   const want = shouldTranslate();
   if (restart) cache.clear();
@@ -272,11 +323,38 @@ function reevaluate(restart = false) {
   if (want) start();
 }
 
+const whenBody = () => new Promise<void>(ok => {
+  if (document.body) return ok();
+  const o = new MutationObserver(() => { if (document.body) { o.disconnect(); ok(); } });
+  o.observe(document, { childList: true, subtree: true });
+});
+
+const whenParsed = () => new Promise<void>(ok => {
+  if (document.readyState !== 'loading') return ok();
+  document.addEventListener('DOMContentLoaded', () => ok(), { once: true });
+});
+
+// document_start 注入：读规则和页面解析并行；能提前定下来就先预热原生、隐藏页面、边解析边翻
 async function main() {
-  if (!document.body || location.protocol === 'about:') return;
+  if (location.protocol === 'about:' || !/html/.test(document.contentType)) return;
+
+  api.runtime.onMessage.addListener((msg: TabCommand) => {
+    if (msg?.cmd === 'state') return Promise.resolve(state());
+    if (msg?.cmd === 'toggle') {
+      if (active) { setTabChoice('off'); stop(); } else { setTabChoice('on'); start(); }
+      return Promise.resolve(state());
+    }
+  });
+
   rules = await loadRules();
-  pageLang = await detectLanguage();
-  reevaluate();
+  pageLang = baseLang(document.documentElement.lang);
+  const early = decidable();
+  if (early && shouldTranslate()) {
+    if (rules.settings.cover && document.readyState === 'loading') coverPage();
+    api.runtime.sendMessage({ op: 'warm', target: rules.settings.target, fluent: rules.settings.fluent, hint: pageLang }).catch(() => {});
+  }
+  await whenBody();
+  if (early) reevaluate();
 
   api.storage.onChanged.addListener(async (changes: Record<string, unknown>, area: string) => {
     if (area !== 'local') return;
@@ -287,13 +365,10 @@ async function main() {
     reevaluate('settings' in changes && (before.target !== rules.settings.target || before.fluent !== rules.settings.fluent));
   });
 
-  api.runtime.onMessage.addListener((msg: TabCommand) => {
-    if (msg?.cmd === 'state') return Promise.resolve(state());
-    if (msg?.cmd === 'toggle') {
-      if (active) { setTabChoice('off'); stop(); } else { setTabChoice('on'); start(); }
-      return Promise.resolve(state());
-    }
-  });
+  // 没声明语言：等正文解析完再识别（提前定下来的页面也补上，弹窗「总是翻译某语言」要用）
+  await whenParsed();
+  if (!pageLang) pageLang = await detectLanguage();
+  if (!early) reevaluate();
 }
 
 main();

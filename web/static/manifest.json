@@ -11,7 +11,7 @@
     "512": "icon-512.png"
   },
   "background": { "scripts": ["background.js"], "persistent": false },
-  "content_scripts": [{ "js": ["content.js"], "matches": ["<all_urls>"], "run_at": "document_end" }],
+  "content_scripts": [{ "js": ["content.js"], "matches": ["<all_urls>"], "run_at": "document_start" }],
   "action": {
     "default_popup": "popup.html",
     "default_icon": { "16": "toolbar-16.png", "32": "toolbar-32.png" }

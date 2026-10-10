@@ -20,6 +20,7 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 /// 消息格式见 web/src/protocol.ts
 enum NativeRequest: Sendable {
     case translate(units: [TextUnit], target: String, fluent: Bool, hint: String?)
+    case warm(target: String, fluent: Bool, hint: String?)
     case detect(String)
     case capabilities
     case invalid(String)
@@ -39,6 +40,11 @@ enum NativeRequest: Sendable {
             }
             self = .translate(
                 units: units,
+                target: message["target"] as? String ?? "zh-Hans",
+                fluent: (message["fluent"] as? NSNumber)?.boolValue ?? true,
+                hint: message["hint"] as? String)
+        case "warm":
+            self = .warm(
                 target: message["target"] as? String ?? "zh-Hans",
                 fluent: (message["fluent"] as? NSNumber)?.boolValue ?? true,
                 hint: message["hint"] as? String)
@@ -67,6 +73,9 @@ enum NativeRequest: Sendable {
                     return out
                 },
             ]
+        case let .warm(target, fluent, hint):
+            await Translator.shared.warm(source: hint, target: target, fluent: fluent)
+            return ["ok": true]
         case let .detect(text):
             guard let lang = Translator.detect(text, hint: nil) else { return ["ok": false, "error": "无法识别"] }
             return ["ok": true, "lang": lang]

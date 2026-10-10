@@ -39,6 +39,9 @@ export type TranslateResponse = {
 /** 只查缓存（background 处理，不进原生），回复里 results 只含命中的 */
 export type LookupRequest = Omit<TranslateRequest, 'op'> & { op: 'lookup' };
 
+/** 预热原生：叫醒扩展进程，hint 已知时顺带把这对语言的模型加载好 */
+export type WarmRequest = { op: 'warm'; target: string; fluent: boolean; hint?: string };
+
 export type DetectRequest = { op: 'detect'; text: string };
 export type DetectResponse = { ok: boolean; lang?: string; error?: string };
 
@@ -46,10 +49,10 @@ export type CapabilitiesRequest = { op: 'capabilities' };
 /** fluent = 本机能用「流畅」（Apple 智能）；不能时 reason 说明原因 */
 export type CapabilitiesResponse = { ok: boolean; fluent?: boolean; reason?: string; error?: string };
 
-export type NativeRequest = TranslateRequest | DetectRequest | CapabilitiesRequest;
+export type NativeRequest = TranslateRequest | WarmRequest | DetectRequest | CapabilitiesRequest;
 
-/** auto = 按站点 / 语言规则自动翻译（关掉后只能手动翻译此页）；cache = 跨页面缓存译文 */
-export type Settings = { target: string; fluent: boolean; auto: boolean; cache: boolean };
+/** auto = 按站点 / 语言规则自动翻译（关掉后只能手动翻译此页）；cache = 跨页面缓存译文；cover = 防闪烁（第一屏译好前先隐藏页面） */
+export type Settings = { target: string; fluent: boolean; auto: boolean; cache: boolean; cover: boolean };
 export type SiteRule = 'always' | 'never';
 export type Rules = {
   settings: Settings;
@@ -70,7 +73,7 @@ export type TabState = {
   /** done 里来自缓存的段数（页内 + 跨页面） */
   cached: number;
   failed: number;
-  /** 端到端耗时（ms）：开始翻译到第一段回填；查缓存、翻译的平均往返 */
+  /** 端到端耗时（ms）：打开页面到第一段回填；查缓存、翻译的平均往返 */
   first?: number;
   lookupMs?: number;
   translateMs?: number;

@@ -23,10 +23,11 @@ async function refresh() {
 }
 
 function render() {
-  const { target, fluent, auto, cache } = rules.settings;
+  const { target, fluent, auto, cache, cover } = rules.settings;
   $<HTMLSelectElement>('target').value = target;
   $<HTMLInputElement>('auto').checked = auto;
   $<HTMLInputElement>('cache').checked = cache;
+  $<HTMLInputElement>('cover').checked = cover;
   $<HTMLSelectElement>('fluent').value = fluent ? '1' : '0';
   $('page').hidden = !tab;
   $('unavailable').hidden = !!tab;
@@ -78,7 +79,7 @@ async function selftest() {
     r?.err ? `单元错误: ${r.err}` : '',
     res.missing?.length ? `缺语言包: ${res.missing.join(', ')}` : '',
     res.error ? `错误: ${res.error}` : '',
-    tab?.active ? `本页：首段 ${tab.first ?? '-'} ms，查缓存往返 ${tab.lookupMs ?? '-'} ms，翻译往返 ${tab.translateMs ?? '-'} ms` : '',
+    tab?.active ? `本页：打开到首段译文 ${tab.first ?? '-'} ms，查缓存往返 ${tab.lookupMs ?? '-'} ms，翻译往返 ${tab.translateMs ?? '-'} ms` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -120,6 +121,8 @@ async function main() {
     save({ settings: { ...rules.settings, auto: (e.target as HTMLInputElement).checked } });
   $<HTMLInputElement>('cache').onchange = e =>
     save({ settings: { ...rules.settings, cache: (e.target as HTMLInputElement).checked } });
+  $<HTMLInputElement>('cover').onchange = e =>
+    save({ settings: { ...rules.settings, cover: (e.target as HTMLInputElement).checked } });
   $('cacheClear').onclick = async () => {
     await api.runtime.sendMessage({ bg: 'cache-clear' }).catch(() => {});
     cacheInfo();
