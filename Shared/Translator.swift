@@ -45,8 +45,6 @@ actor Translator {
     }
 
     private var sessions: [String: TranslationSession] = [:]
-    /// 带格式整批翻译连续失败的次数（按语言对 + 译法）。到 3 次就当这一档不支持带格式，后面整批直接纯文本，省掉逐段重试
-    private var formatFailures: [String: Int] = [:]
 
     func translate(_ units: [TextUnit], target: String, fluent: Bool, hint: String?) async -> (results: [UnitResult], missing: [String]) {
         var results: [UnitResult] = []
@@ -80,7 +78,7 @@ actor Translator {
                 continue
             }
             let session = session(source: sourceLanguage, target: targetLanguage, fluent: fluent)
-            results += await translate(group, source: source, session: session, key: "\(source)>\(target)>\(fluent)")
+            results += await translate(group, source: source, session: session)
         }
         return (results, missing)
     }
@@ -159,39 +157,42 @@ actor Translator {
         _ = try? await session(source: sourceLanguage, target: targetLanguage, fluent: fluent).translate("Hello")
     }
 
-    private func translate(_ group: [TextUnit], source: String, session: TranslationSession, key: String) async -> [UnitResult] {
-        if formatFailures[key, default: 0] < 3 {
-            let requests = group.map { TranslationSession.Request(sourceText: Self.attributed($0.runs), clientIdentifier: $0.id) }
-            if let responses = try? await session.translations(from: requests) {
-                formatFailures[key] = 0
-                return responses.map { UnitResult(id: $0.clientIdentifier ?? "", runs: Self.runs($0), source: source) }
+    /// 批量接口（translations(from:) / translate(batch:)）不带回属性，只有单句 translate(AttributedString) 能保格式（真机 build 6/7 诊断）。
+    /// 单句并发 4 路；某段失败再串行重试，仍不行才退回纯文本（会丢掉段内链接等格式）
+    private func translate(_ group: [TextUnit], source: String, session: TranslationSession) async -> [UnitResult] {
+        var out = [UnitResult?](repeating: nil, count: group.count)
+        await withTaskGroup(of: (Int, UnitResult?).self) { tasks in
+            var next = 0
+            while next < min(4, group.count) {
+                let i = next
+                tasks.addTask { (i, await Self.formatted(group[i], source: source, session: session)) }
+                next += 1
             }
-            formatFailures[key, default: 0] += 1
-        }
-        if formatFailures[key, default: 0] >= 3 {
-            let plain = group.map { TranslationSession.Request(sourceText: $0.plain, clientIdentifier: $0.id) }
-            if let responses = try? await session.translations(from: plain) {
-                return responses.map { UnitResult(id: $0.clientIdentifier ?? "", runs: [TextRun(text: $0.targetText, slot: -1)], source: source) }
+            while let item = await tasks.next() {
+                out[item.0] = item.1
+                if next < group.count {
+                    let i = next
+                    tasks.addTask { (i, await Self.formatted(group[i], source: source, session: session)) }
+                    next += 1
+                }
             }
         }
-        // 整批失败多半只是个别段落属性对不齐：逐段重试带格式，只有仍失败的那段才退回纯文本（会丢掉段内链接等格式）
         var results: [UnitResult] = []
-        for unit in group {
-            results.append(await translateOne(unit, source: source, session: session))
+        for (i, unit) in group.enumerated() {
+            if let result = out[i] { results.append(result) } else { results.append(await translateOne(unit, source: source, session: session)) }
         }
         return results
     }
 
+    private static func formatted(_ unit: TextUnit, source: String, session: TranslationSession) async -> UnitResult? {
+        guard let response = try? await session.translate(attributed(unit.runs)) else { return nil }
+        return UnitResult(id: unit.id, runs: runs(response), source: source)
+    }
+
     private func translateOne(_ unit: TextUnit, source: String, session: TranslationSession) async -> UnitResult {
-        let formatted = TranslationSession.Request(sourceText: Self.attributed(unit.runs), clientIdentifier: unit.id)
-        if let response = try? await session.translations(from: [formatted]).first {
-            return UnitResult(id: unit.id, runs: Self.runs(response), source: source)
-        }
+        if let result = await Self.formatted(unit, source: source, session: session) { return result }
         do {
-            let plain = TranslationSession.Request(sourceText: unit.plain, clientIdentifier: unit.id)
-            guard let response = try await session.translations(from: [plain]).first else {
-                return UnitResult(id: unit.id, source: source, error: "empty")
-            }
+            let response = try await session.translate(unit.plain)
             return UnitResult(id: unit.id, runs: [TextRun(text: response.targetText, slot: -1)], source: source)
         } catch {
             return UnitResult(id: unit.id, source: source, error: String(describing: error))

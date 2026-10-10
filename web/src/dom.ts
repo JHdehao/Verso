@@ -176,9 +176,43 @@ function merge(unit: Unit, runs: Run[]): Run[] {
   return out;
 }
 
+/**
+ * 不翻译的原子槽（行内代码等）按原文重新锚定：框架对齐槽位时可能差一两个字符（真机见过「[5] npm instal[6]l 。」），
+ * 而回填时原子只放原元素、丢弃这段译文，被挤到邻槽的「l」就会露在页面上。
+ * 在整段译文里找原文：区间内的字符归原子槽，原子槽在区间外多占的字符还给相邻的槽。找不到原文就不动。
+ */
+export function anchorAtoms(sent: Run[], got: Run[]): Run[] {
+  let full = '';
+  const labels: number[] = [];
+  for (const r of got) { full += r.t; for (let i = 0; i < r.t.length; i++) labels.push(r.s); }
+  for (const atom of sent) {
+    const text = atom.k ? atom.t.trim() : '';
+    if (!text) continue;
+    // 同样的文字出现多处时，选和这个槽现有字符重叠最多的那处
+    let best = -1, overlap = -1;
+    for (let p = full.indexOf(text); p >= 0; p = full.indexOf(text, p + 1)) {
+      let n = 0;
+      for (let i = p; i < p + text.length; i++) if (labels[i] === atom.s) n++;
+      if (n > overlap) { best = p; overlap = n; }
+    }
+    if (best < 0) continue;
+    const end = best + text.length;
+    for (let i = best; i < end; i++) labels[i] = atom.s;
+    for (let i = best - 1; i >= 0 && labels[i] === atom.s; i--) labels[i] = i > 0 ? labels[i - 1] : -1;
+    for (let i = end; i < full.length && labels[i] === atom.s; i++) labels[i] = i + 1 < full.length ? labels[i + 1] : -1;
+  }
+  const out: Run[] = [];
+  for (let i = 0; i < full.length; i++) {
+    const last = out[out.length - 1];
+    if (last && last.s === labels[i]) last.t += full[i];
+    else out.push({ t: full[i], s: labels[i] });
+  }
+  return out;
+}
+
 export function apply(unit: Unit, runs: Run[]): 'inplace' | 'rebuild' {
   restore(unit);
-  const merged = merge(unit, runs);
+  const merged = merge(unit, anchorAtoms(serialize(unit), runs));
   if (merged.every(r => r.s < 0)) { plain(unit, merged.map(r => r.t).join('')); return 'inplace'; }
   if (inPlace(unit, merged)) return 'inplace';
   rebuild(unit, merged);

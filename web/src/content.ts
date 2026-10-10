@@ -9,8 +9,13 @@ const MAX_INFLIGHT = 2;
 /** 只查缓存的一批可以大得多：不过原生，只是一次 IndexedDB 读 */
 const LOOKUP_UNITS = 300;
 const TAB_KEY = 'verso:tab';
-/** 防闪烁最多隐藏这么久，原生再慢也照常显示 */
-const COVER_MS = 500;
+// 防闪烁的计时从「首屏有要翻的段落」算起：网络慢时正文还没到，那段本来就是加载白屏，隐藏不影响观感
+/** 首屏段落出现后最多再等这么久译文 */
+const COVER_TRANSLATE_MS = 800;
+/** 页面解析完仍没有首屏段落（已是目标语言 / 纯图片 / JS 还没渲染），最多再等这么久 */
+const COVER_IDLE_MS = 1000;
+/** 绝对上限，防异常 */
+const COVER_MAX_MS = 5000;
 
 let rules: Rules;
 let pageLang: string | undefined;
@@ -41,7 +46,8 @@ const hot = new WeakSet<Unit>();
 /** 防闪烁期间还没出结果的视口内单元，清空就显示页面 */
 const pendingHot = new Set<Unit>();
 let cover: HTMLStyleElement | undefined;
-let coverTimer: ReturnType<typeof setTimeout> | undefined;
+/** 首屏段落已出现，翻译计时已开始 */
+let coverArmed = false;
 let inflight = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let io: IntersectionObserver | undefined;
@@ -109,11 +115,10 @@ function coverPage() {
   cover = document.createElement('style');
   cover.textContent = 'html{opacity:0!important}';
   document.documentElement.append(cover);
-  coverTimer = setTimeout(uncover, COVER_MS);
+  setTimeout(uncover, COVER_MAX_MS);
 }
 
 function uncover() {
-  clearTimeout(coverTimer);
   cover?.remove();
   cover = undefined;
   pendingHot.clear();
@@ -132,7 +137,13 @@ const timed = (k: keyof typeof lat, t0: number) => { lat[k][0] += performance.no
 const avg = (k: keyof typeof lat) => (lat[k][1] ? Math.round(lat[k][0] / lat[k][1]) : undefined);
 
 function enqueue(u: Unit, inView: boolean) {
-  if (inView) { hot.add(u); if (cover) pendingHot.add(u); }
+  if (inView) {
+    hot.add(u);
+    if (cover) {
+      pendingHot.add(u);
+      if (!coverArmed) { coverArmed = true; setTimeout(uncover, COVER_TRANSLATE_MS); }
+    }
+  }
   if (u.applied || sent.has(u) || !units.has(u.id)) return;
   const hit = cache.get(cacheKey(serialize(u)));
   if (hit) { fill(u, hit, true); return settle([u]); }
@@ -219,8 +230,8 @@ function markDirty(n: Node) {
   const root = n.nodeType === 1 && !inlineOnly(n as Element) ? n : n.parentNode;
   if (!root) return;
   dirty.add(root);
-  // 页面还在加载：新段落尽快切段送翻，首屏不等整页解析完
-  dirtyTimer ??= setTimeout(rescan, document.readyState === 'loading' ? 16 : 120);
+  // 页面还在加载 / 防闪烁还在遮：新段落尽快切段送翻，首屏不等整页解析完
+  dirtyTimer ??= setTimeout(rescan, document.readyState === 'loading' || cover ? 16 : 120);
 }
 
 function rescan() {
@@ -369,6 +380,7 @@ async function main() {
 
   // 没声明语言：等正文解析完再识别（提前定下来的页面也补上，弹窗「总是翻译某语言」要用）
   await whenParsed();
+  if (cover) setTimeout(() => { if (!coverArmed) uncover(); }, COVER_IDLE_MS);
   if (!pageLang) pageLang = await detectLanguage();
   if (!early) reevaluate();
 }

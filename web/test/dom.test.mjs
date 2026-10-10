@@ -116,3 +116,22 @@ test('已经切过的节点不会被重复切段', () => {
   assert.equal(scan(body).length, 1);
   assert.equal(scan(body).length, 0);
 });
+
+test('锚定原子槽：对齐差一个字符时把「l」还给行内代码，前导空格还给前一槽', async () => {
+  const { anchorAtoms } = await import('../src/dom.ts');
+  const sent = [{ t: ', then run ', s: 4 }, { t: 'npm install', s: 5, k: 1 }, { t: '.', s: 6 }];
+  const got = [{ t: '，然后运行', s: 4 }, { t: ' npm instal', s: 5 }, { t: 'l 。', s: 6 }];
+  assert.deepEqual(anchorAtoms(sent, got), [{ t: '，然后运行 ', s: 4 }, { t: 'npm install', s: 5 }, { t: ' 。', s: 6 }]);
+  // 找不到原文（被译掉了）就不动
+  assert.deepEqual(anchorAtoms(sent, [{ t: '运行npm安装。', s: -1 }]), [{ t: '运行npm安装。', s: -1 }]);
+});
+
+test('回填：带格式译文对齐偏一个字符，行内代码后不多出字母', () => {
+  const body = page(`<p>Then run <code>npm install</code>.</p>`);
+  const [u] = scan(body);
+  const runs = serialize(u);
+  const code = runs.find(r => r.k).s, tail = runs[runs.length - 1].s, head = runs[0].s;
+  apply(u, [{ t: '然后运行', s: head }, { t: ' npm instal', s: code }, { t: 'l 。', s: tail }]);
+  assert.equal(body.querySelector('p').textContent, '然后运行 npm install 。');
+  assert.equal(body.querySelector('code').textContent, 'npm install');
+});
