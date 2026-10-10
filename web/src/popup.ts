@@ -1,4 +1,4 @@
-import type { Rules, Run, TabState, TranslateResponse } from './protocol';
+import type { CapabilitiesResponse, Rules, Run, TabState, TranslateResponse } from './protocol';
 import { api, LANGUAGES, languageName, loadRules, siteKey } from './rules';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -108,6 +108,15 @@ async function main() {
     window.close();
   };
   $('selftest').onclick = selftest;
+
+  // 没有 Apple 智能时「流畅」会被系统静默降级，干脆标灰并切到「快速」
+  const caps: CapabilitiesResponse = await api.runtime.sendMessage({ op: 'capabilities' }).catch(() => ({ ok: false }));
+  if (caps.ok && caps.fluent === false) {
+    const fluentOption = $<HTMLSelectElement>('fluent').options[0];
+    fluentOption.disabled = true;
+    fluentOption.textContent = `流畅（${caps.reason ?? 'Apple 智能不可用'}）`;
+    if (rules.settings.fluent) await save({ settings: { ...rules.settings, fluent: false } });
+  }
 
   await refresh();
   setInterval(refresh, 1000);

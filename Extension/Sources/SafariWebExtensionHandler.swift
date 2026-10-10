@@ -21,6 +21,7 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 enum NativeRequest: Sendable {
     case translate(units: [TextUnit], target: String, fluent: Bool, hint: String?)
     case detect(String)
+    case capabilities
     case invalid(String)
 
     init(_ message: [String: Any]) {
@@ -43,6 +44,8 @@ enum NativeRequest: Sendable {
                 hint: message["hint"] as? String)
         case "detect":
             self = .detect(message["text"] as? String ?? "")
+        case "capabilities":
+            self = .capabilities
         case let op:
             self = .invalid(op ?? "nil")
         }
@@ -67,6 +70,9 @@ enum NativeRequest: Sendable {
         case let .detect(text):
             guard let lang = Translator.detect(text, hint: nil) else { return ["ok": false, "error": "无法识别"] }
             return ["ok": true, "lang": lang]
+        case .capabilities:
+            guard let reason = Translator.fluentUnavailableReason else { return ["ok": true, "fluent": true] }
+            return ["ok": true, "fluent": false, "reason": reason]
         case let .invalid(op):
             return ["ok": false, "error": "未知操作 \(op)"]
         }

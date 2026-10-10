@@ -35,7 +35,11 @@ export type TranslateResponse = {
 export type DetectRequest = { op: 'detect'; text: string };
 export type DetectResponse = { ok: boolean; lang?: string; error?: string };
 
-export type NativeRequest = TranslateRequest | DetectRequest;
+export type CapabilitiesRequest = { op: 'capabilities' };
+/** fluent = 本机能用「流畅」（Apple 智能）；不能时 reason 说明原因 */
+export type CapabilitiesResponse = { ok: boolean; fluent?: boolean; reason?: string; error?: string };
+
+export type NativeRequest = TranslateRequest | DetectRequest | CapabilitiesRequest;
 
 export type Settings = { target: string; fluent: boolean };
 export type SiteRule = 'always' | 'never';

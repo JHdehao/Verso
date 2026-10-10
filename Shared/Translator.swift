@@ -1,4 +1,5 @@
 import Foundation
+import FoundationModels
 import NaturalLanguage
 import Translation
 
@@ -31,6 +32,17 @@ struct UnitResult: Sendable {
 /// 苹果 Translation 框架的薄封装：按语种分组、按语言对缓存会话、带格式批量翻译，失败退回纯文本。
 actor Translator {
     static let shared = Translator()
+
+    /// 「流畅」= .highFidelity，要 Apple 智能；不可用时系统静默退回标准模型，两档其实一样。nil = 可用。
+    static var fluentUnavailableReason: String? {
+        switch SystemLanguageModel.default.availability {
+        case .available: nil
+        case .unavailable(.deviceNotEligible): "本机不支持 Apple 智能"
+        case .unavailable(.appleIntelligenceNotEnabled): "未开启 Apple 智能"
+        case .unavailable(.modelNotReady): "Apple 智能模型还没下载好"
+        case .unavailable: "Apple 智能不可用"
+        }
+    }
 
     private var sessions: [String: TranslationSession] = [:]
 
