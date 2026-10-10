@@ -118,7 +118,7 @@ struct HomeView: View {
             TextRun(text: ".", slot: 6),
         ])
         let start = Date()
-        let (results, missing) = await Translator.shared.translate([unit], target: target, fluent: true, hint: "en")
+        let (results, missing, _) = await Translator.shared.translate([unit], target: target, fluent: true, hint: "en")
         let ms = Int(Date().timeIntervalSince(start) * 1000)
         let result = results.first
         let text = result?.runs?.map { $0.slot < 0 ? $0.text : "[\($0.slot)]\($0.text)" }.joined() ?? ""
