@@ -89,6 +89,28 @@ test('译文丢了槽位编号（-1）时归到顶层文字', () => {
   assert.equal(body.querySelector('p').textContent, '这里是一句话。');
 });
 
+test('纯文本译文留在原来的元素里，不露出视觉隐藏的标签', () => {
+  const body = page(`<div><a href="#o"><span class="sr">Open Menu</span></a> <a href="#c"><span class="sr">Close Menu</span></a></div>`);
+  const [u] = scan(body);
+  apply(u, [{ t: '打开菜单 关闭菜单', s: -1 }]);
+  const div = body.querySelector('div');
+  assert.equal(div.querySelectorAll('a').length, 2);
+  assert.equal(div.querySelector('a[href="#o"] span').textContent, '打开菜单 关闭菜单');
+  assert.equal(div.querySelector('a[href="#c"] span').textContent, '');
+  assert.ok(Array.from(div.childNodes).every(n => n.nodeType !== 3 || !/\S/.test(n.data)));
+  restore(u);
+  assert.equal(div.textContent, 'Open Menu Close Menu');
+});
+
+test('纯文本译文不会挪到原子元素前面', () => {
+  const body = page(`<p><img src="x.png"> Caption here</p>`);
+  const [u] = scan(body);
+  apply(u, [{ t: '图片说明', s: -1 }]);
+  const p = body.querySelector('p');
+  assert.equal(p.firstChild.nodeName, 'IMG');
+  assert.equal(p.textContent, '图片说明');
+});
+
 test('已经切过的节点不会被重复切段', () => {
   const body = page(`<p>Once</p>`);
   assert.equal(scan(body).length, 1);

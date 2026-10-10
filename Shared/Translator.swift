@@ -88,13 +88,27 @@ actor Translator {
         if let responses = try? await session.translations(from: requests) {
             return responses.map { UnitResult(id: $0.clientIdentifier ?? "", runs: Self.runs($0), source: source) }
         }
-        // 带格式翻译失败（个别段落属性对不齐等）→ 整组退回纯文本，网页侧会把译文放进顶层文字
-        let plain = group.map { TranslationSession.Request(sourceText: $0.plain, clientIdentifier: $0.id) }
+        // 整批失败多半只是个别段落属性对不齐：逐段重试带格式，只有仍失败的那段才退回纯文本（会丢掉段内链接等格式）
+        var results: [UnitResult] = []
+        for unit in group {
+            results.append(await translateOne(unit, source: source, session: session))
+        }
+        return results
+    }
+
+    private func translateOne(_ unit: TextUnit, source: String, session: TranslationSession) async -> UnitResult {
+        let formatted = TranslationSession.Request(sourceText: Self.attributed(unit.runs), clientIdentifier: unit.id)
+        if let response = try? await session.translations(from: [formatted]).first {
+            return UnitResult(id: unit.id, runs: Self.runs(response), source: source)
+        }
         do {
-            let responses = try await session.translations(from: plain)
-            return responses.map { UnitResult(id: $0.clientIdentifier ?? "", runs: [TextRun(text: $0.targetText, slot: -1)], source: source) }
+            let plain = TranslationSession.Request(sourceText: unit.plain, clientIdentifier: unit.id)
+            guard let response = try await session.translations(from: [plain]).first else {
+                return UnitResult(id: unit.id, source: source, error: "empty")
+            }
+            return UnitResult(id: unit.id, runs: [TextRun(text: response.targetText, slot: -1)], source: source)
         } catch {
-            return group.map { UnitResult(id: $0.id, source: source, error: String(describing: error)) }
+            return UnitResult(id: unit.id, source: source, error: String(describing: error))
         }
     }
 

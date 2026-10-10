@@ -179,6 +179,7 @@ function merge(unit: Unit, runs: Run[]): Run[] {
 export function apply(unit: Unit, runs: Run[]): 'inplace' | 'rebuild' {
   restore(unit);
   const merged = merge(unit, runs);
+  if (merged.every(r => r.s < 0)) { plain(unit, merged.map(r => r.t).join('')); return 'inplace'; }
   if (inPlace(unit, merged)) return 'inplace';
   rebuild(unit, merged);
   return 'rebuild';
@@ -246,6 +247,22 @@ function inPlace(unit: Unit, runs: Run[]): boolean {
   for (const [node, ref] of created) unit.parent.insertBefore(node, ref && ref.parentNode === unit.parent ? ref : null);
   unit.applied = { mode: 'inplace', texts, created: created.map(c => c[0]) };
   return true;
+}
+
+/**
+ * 译文整段丢了槽位（原生侧退回纯文本）：写进原文第一个有字的文本节点，其余文字清空，不新建节点。
+ * 新建的顶层节点会跑出原来的元素——比如视觉隐藏的「Open Menu」标签，译文就会露出来叠在页面上。
+ */
+function plain(unit: Unit, text: string) {
+  const host = unit.slots.find(s => !s.atom && /\S/.test((s.node as Text).data));
+  const texts = new Map<Text, string>();
+  for (const s of unit.slots) {
+    if (s.atom) continue;
+    const node = s.node as Text;
+    const t = s === host ? text : '';
+    if (node.data !== t) { texts.set(node, node.data); node.data = t; }
+  }
+  unit.applied = { mode: 'inplace', texts, created: [] };
 }
 
 function rebuild(unit: Unit, runs: Run[]) {
