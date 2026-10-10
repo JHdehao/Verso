@@ -33,7 +33,7 @@ const SKIP = new Set([
   'svg', 'math', 'canvas', 'video', 'audio', 'iframe', 'object', 'embed', 'head', 'title', 'slot',
 ]);
 const INLINE = new Set([
-  'a', 'abbr', 'acronym', 'b', 'bdi', 'bdo', 'big', 'button', 'cite', 'data', 'del', 'dfn', 'em', 'font',
+  'a', 'abbr', 'acronym', 'b', 'bdi', 'bdo', 'big', 'cite', 'data', 'del', 'dfn', 'em', 'font',
   'i', 'ins', 'label', 'mark', 'nobr', 'output', 'q', 'rp', 'rt', 'ruby', 's', 'small', 'span', 'strike',
   'strong', 'sub', 'sup', 'time', 'u',
 ]);
@@ -48,6 +48,9 @@ const OBJ = '￼';
 const LETTER = /\p{L}/u;
 /** 连字符 / 点分的小写标识符（ai-agents、full-text-search、github.com）单独成段时不翻 */
 const SLUG = /^[a-z0-9]+(?:[-_./][a-z0-9]+)+$/;
+/** 计数器文字：数字带数量单位（9.2k、1.2M、3万），去掉后没有字母就当计数器 */
+const COUNT = /\d[\d.,]*\s?(?:[kKmMbB]|万|亿)?(?![\p{L}])/gu;
+const countish = (t: string) => !LETTER.test(t.replace(COUNT, ''));
 
 let hiddenMemo = new WeakMap<Element, boolean>();
 /** 有布局但 ≤1px：sr-only 一类只给读屏用的文字。没有布局（display:none、jsdom）不算 */
@@ -82,7 +85,8 @@ let inlineMemo = new WeakMap<Element, boolean>();
 /** 整个子树都是行内内容（没有块级后代） */
 export function inlineOnly(el: Element): boolean {
   if (isAtom(el)) return true;
-  if (!INLINE.has(el.localName)) return false;
+  // 按钮（button 不在 INLINE 里、role=button 的链接 / span）是界面上独立的一块：自成一段，不和旁边的按钮、提示框并在一起
+  if (!INLINE.has(el.localName) || el.getAttribute('role') === 'button') return false;
   let m = inlineMemo.get(el);
   if (m === undefined) {
     m = true;
@@ -220,7 +224,7 @@ export function anchorAtoms(sent: Run[], got: Run[]): Run[] {
   /** 把 [from, to) 里标成 s 的字符改标成 fill */
   const give = (from: number, to: number, s: number, fill: number) => { for (let i = from; i < to; i++) if (labels[i] === s) labels[i] = fill; };
   for (const r of sent) {
-    const text = r.k || !LETTER.test(r.t) ? r.t.trim() : '';
+    const text = r.k || countish(r.t) ? r.t.trim() : '';
     if (!text) continue;
     // 同样的文字出现多处时，选和这个槽现有字符重叠最多的那处
     let best = -1, overlap = -1;

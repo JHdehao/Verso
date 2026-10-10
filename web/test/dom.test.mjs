@@ -158,3 +158,15 @@ test('切段：一排独立链接（主题标签）各成一段，连字符标�
   const body = page(`<div><a href="#">ai-agents</a> <a href="#">Full text</a> · <a href="#">Vector search</a></div>`);
   assert.deepEqual(scan(body).map(text), ['Full text', 'Vector search']);
 });
+
+test('锚定：带数量单位的计数器（9.2k）也按原文锚定', async () => {
+  const { anchorAtoms } = await import('../src/dom.ts');
+  assert.deepEqual(
+    anchorAtoms([{ t: 'Fork ', s: 0 }, { t: '9.2k', s: 2 }], [{ t: '叉', s: 0 }, { t: '子9.2k', s: 2 }]),
+    [{ t: '叉子', s: 0 }, { t: '9.2k', s: 2 }]);
+});
+
+test('切段：按钮和 role=button 各成一段，不和旁边的按钮、提示框并在一起', () => {
+  const body = page(`<div><button><span>Code</span></button><a role="button" href="#">More options</a><span>Sign in</span></div>`);
+  assert.deepEqual(scan(body).map(text), ['Code', 'More options', 'Sign in']);
+});

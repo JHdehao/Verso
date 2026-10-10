@@ -96,67 +96,52 @@ actor Translator {
         return (results, missing, timing)
     }
 
-    /// 自检：同一句带链接 / 行内代码的英文，分别走单句 translate(AttributedString)（苹果文档示例的用法）和批量接口，
-    /// 槽位编号用自定义属性 / 链接属性 / 加粗携带，两档译法各翻一次，看哪条路能把格式带回来
+    /// 自检：① 带格式回归（单句 translate(AttributedString) 能否带回槽位、不翻译标记）；
+    /// ② 吞吐：12 句真实长度的英文，串行单句 / 并发 4 路单句（生产路径）/ 批量接口（不带格式）各翻一遍的总耗时，决定并发度
     func diagnose(target: String) async -> [String] {
-        let parts: [(String, Int, Bool)] = [
-            ("Read the ", 0, false), ("documentation", 1, false), (" before you ", 2, false),
-            ("start", 3, false), (", then run ", 4, false), ("npm install", 5, true), (".", 6, false),
-        ]
-        enum Carrier: String, CaseIterable { case slot = "自定义属性", link = "链接属性", bold = "加粗" }
-        func source(_ carrier: Carrier) -> AttributedString {
-            var text = AttributedString()
-            for (piece, slot, skip) in parts {
-                var run = AttributedString(piece)
-                switch carrier {
-                case .slot: run[VersoSlotAttribute.self] = slot
-                case .link: run.link = URL(string: "verso:\(slot)")
-                case .bold: if slot == 1 || slot == 3 { run.inlinePresentationIntent = .stronglyEmphasized }
-                }
-                if skip { run[AttributeScopes.TranslationAttributes.SkipTranslationAttribute.self] = true }
-                text.append(run)
-            }
-            return text
-        }
-        func describe(_ response: TranslationSession.Response, _ carrier: Carrier) -> String {
-            guard let attributed = response.attributedTargetText else { return "无属性: \(response.targetText)" }
-            var out = ""
-            for run in attributed.runs {
-                let piece = String(attributed[run.range].characters)
-                switch carrier {
-                case .slot: out += run[VersoSlotAttribute.self].map { "[\($0)]\(piece)" } ?? piece
-                case .link: out += run.link.flatMap { Int($0.absoluteString.dropFirst(6)) }.map { "[\($0)]\(piece)" } ?? piece
-                case .bold: out += run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true ? "**\(piece)**" : piece
-                }
-            }
-            return out
-        }
         let sourceLanguage = Locale.Language(identifier: "en")
         let targetLanguage = Locale.Language(identifier: target)
+        let session = session(source: sourceLanguage, target: targetLanguage, fluent: false)
         var lines: [String] = []
-        for fluent in [false, true] {
-            let session = TranslationSession(installedSource: sourceLanguage, target: targetLanguage, preferredStrategy: fluent ? .highFidelity : .lowLatency)
-            let mode = fluent ? "流畅" : "快速"
-            for carrier in Carrier.allCases {
-                let start = Date()
-                do {
-                    let response = try await session.translate(source(carrier))
-                    lines.append("\(mode)/单句/\(carrier.rawValue) \(Int(Date().timeIntervalSince(start) * 1000))ms \(describe(response, carrier))")
-                } catch {
-                    lines.append("\(mode)/单句/\(carrier.rawValue) 失败: \(error)")
-                }
-            }
-            let start = Date()
-            do {
-                var described = "空结果"
-                for try await response in session.translate(batch: [TranslationSession.Request(sourceText: source(.slot), clientIdentifier: "d")]) {
-                    described = describe(response, .slot)
-                }
-                lines.append("\(mode)/批量序列/自定义属性 \(Int(Date().timeIntervalSince(start) * 1000))ms \(described)")
-            } catch {
-                lines.append("\(mode)/批量序列/自定义属性 失败: \(error)")
-            }
+        let ms = { (start: Date) in Int(Date().timeIntervalSince(start) * 1000) }
+
+        let sample = TextUnit(id: "f", runs: [
+            TextRun(text: "Read the ", slot: 0), TextRun(text: "documentation", slot: 1), TextRun(text: " before you start, then run ", slot: 2),
+            TextRun(text: "npm install", slot: 3, skip: true), TextRun(text: ".", slot: 4),
+        ])
+        var start = Date()
+        if let r = await Self.formatted(sample, source: "en", session: session) {
+            lines.append("带格式 \(ms(start))ms " + (r.runs ?? []).map { $0.slot < 0 ? $0.text : "[\($0.slot)]\($0.text)" }.joined())
+        } else {
+            lines.append("带格式 失败")
         }
+
+        let sentences = [
+            "Ghidra is a software reverse engineering framework created and maintained by the National Security Agency Research Directorate.",
+            "This framework includes a suite of full-featured, high-end software analysis tools that enable users to analyze compiled code.",
+            "Capabilities include disassembly, assembly, decompilation, graphing, and scripting, along with hundreds of other features.",
+            "Users may run Ghidra in either user-interactive or automated modes on a variety of platforms including Windows, macOS, and Linux.",
+            "To install an official pre-built multi-platform release, download the latest release and extract it anywhere you like.",
+            "If you are a developer, you can extend the framework with your own plugins and scripts written in Java or Python.",
+            "Please see the developer guide for instructions on setting up a development environment and building from source.",
+            "We welcome contributions from the community, including bug reports, feature requests, and pull requests.",
+            "Before submitting a pull request, make sure that all tests pass and that your changes follow the coding style.",
+            "Security vulnerabilities should be reported privately so that they can be fixed before being disclosed publicly.",
+            "The project is distributed under the Apache License, which permits commercial use, modification, and distribution.",
+            "Recent releases improved performance on large binaries and added support for several new processor architectures.",
+        ]
+        let units = sentences.enumerated().map { TextUnit(id: "s\($0.offset)", runs: [TextRun(text: $0.element, slot: 0)]) }
+
+        start = Date()
+        for unit in units { _ = await Self.formatted(unit, source: "en", session: session) }
+        let serial = ms(start)
+        start = Date()
+        _ = await translate(units, source: "en", session: session)
+        let parallel = ms(start)
+        start = Date()
+        _ = try? await session.translations(from: units.map { TranslationSession.Request(sourceText: $0.plain, clientIdentifier: $0.id) })
+        let batch = ms(start)
+        lines.append("吞吐 12 句：串行单句 \(serial)ms / 并发4单句 \(parallel)ms / 批量无格式 \(batch)ms")
         return lines
     }
 

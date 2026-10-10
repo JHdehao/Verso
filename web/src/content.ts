@@ -6,6 +6,8 @@ import { api, baseLang, loadRules, siteKey, wants } from './rules';
 const BATCH_UNITS = 40;
 const BATCH_CHARS = 5000;
 const MAX_INFLIGHT = 2;
+/** 首屏段落单独小批送：一批要整批翻完才一起返回，大批会让首屏陪着后面的段落等（真机 GitHub 首批 40 段等了 15 秒） */
+const HOT_BATCH = 8;
 /** 只查缓存的一批可以大得多：不过原生，只是一次 IndexedDB 读 */
 const LOOKUP_UNITS = 300;
 const TAB_KEY = 'verso:tab';
@@ -49,6 +51,8 @@ let cover: HTMLStyleElement | undefined;
 /** 首屏段落已出现，翻译计时已开始 */
 let coverArmed = false;
 let inflight = 0;
+/** 在途的首屏批次数：首屏没回来之前不发别的批次，免得抢同一个翻译服务 */
+let hotInflight = 0;
 /** 上次调用原生的时刻（送翻 / 预热） */
 let lastNative = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -189,23 +193,29 @@ async function lookup() {
 function pump() {
   timer = undefined;
   while (inflight < MAX_INFLIGHT && queue.size) {
+    const ordered = byHeat(queue);
+    const isHot = hot.has(ordered[0]);
+    if (!isHot && hotInflight) break;
+    const limit = isHot ? HOT_BATCH : BATCH_UNITS;
     const batch: { unit: Unit; req: UnitRequest; key: string }[] = [];
     let chars = 0;
-    for (const u of byHeat(queue)) {
+    for (const u of ordered) {
+      if (isHot && !hot.has(u)) break;
       const runs = serialize(u);
       const size = runs.reduce((n, r) => n + r.t.length, 0);
-      if (batch.length && (batch.length >= BATCH_UNITS || chars + size > BATCH_CHARS)) break;
+      if (batch.length && (batch.length >= limit || chars + size > BATCH_CHARS)) break;
       queue.delete(u);
       sent.add(u);
       batch.push({ unit: u, req: { id: u.id, runs }, key: cacheKey(runs) });
       chars += size;
     }
-    send(batch);
+    send(batch, isHot);
   }
 }
 
-async function send(batch: { unit: Unit; req: UnitRequest; key: string }[]) {
+async function send(batch: { unit: Unit; req: UnitRequest; key: string }[], isHot: boolean) {
   inflight++;
+  if (isHot) hotInflight++;
   // 已经 lookup 过，background 只管写回；隐私窗口不写
   const msg: TranslateRequest = { op: 'translate', cache: cacheMode() === 'rw' ? 'wo' : undefined, ...request(batch.map(b => b.req)) };
   const t0 = performance.now();
@@ -217,6 +227,7 @@ async function send(batch: { unit: Unit; req: UnitRequest; key: string }[]) {
     res = { ok: false, error: String(e) };
   }
   inflight--;
+  if (isHot) hotInflight--;
   if (!active) return;
   timed('translate', t0);
   for (const m of res.missing ?? []) missing.add(m);
