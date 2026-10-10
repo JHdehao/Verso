@@ -3,7 +3,7 @@ import { cacheKey } from './dom.ts';
 import type { Run, TranslateRequest, TranslateResponse, UnitRequest, UnitResult } from './protocol';
 
 /** 改了 serialize / merge / Swift 对齐逻辑就 +1，旧条目不再命中，按 LRU 老化掉 */
-export const CACHE_V = 1;
+export const CACHE_V = 2;
 export const LIMIT = 200 * 2 ** 20;
 /** 超限后删到这里，留回差，免得每次写入都淘汰 */
 export const KEEP = 180 * 2 ** 20;

@@ -71,6 +71,7 @@ function mute(fn: () => void) {
 }
 
 function register(found: Unit[]) {
+  const fresh: [Unit, Element][] = [];
   for (const u of found) {
     units.set(u.id, u);
     const box = boxOf(u);
@@ -78,6 +79,15 @@ function register(found: Unit[]) {
     let set = byBox.get(box);
     if (!set) { set = new Set(); byBox.set(box, set); io?.observe(box); }
     set.add(u);
+    fresh.push([u, box]);
+  }
+  // 遮着的时候浏览器可能不出渲染帧，IntersectionObserver 迟迟不回调（无头 Chromium 实测约一半概率）：直接量位置，首屏和下一屏马上送翻
+  if (cover && active) {
+    const rects = fresh.map(([, box]) => box.getBoundingClientRect());
+    fresh.forEach(([u], i) => {
+      const r = rects[i];
+      if (r.bottom > -innerHeight && r.top < 2 * innerHeight) enqueue(u, r.top < innerHeight && r.bottom > 0);
+    });
   }
 }
 

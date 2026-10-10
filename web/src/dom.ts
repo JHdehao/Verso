@@ -11,6 +11,8 @@ export type Slot = {
   /** 单元父节点之下、该节点之上的行内元素（外 → 内） */
   chain: Element[];
   atom: boolean;
+  /** 在视觉隐藏（≤1px，常见的 sr-only）的元素里：原样保留不翻，也不参与对齐，免得译文的一半落进看不见的节点 */
+  hidden?: boolean;
 };
 
 type Applied =
@@ -44,6 +46,20 @@ const ATOM = new Set([
 const ATOM_TEXT = new Set(['code', 'kbd', 'samp', 'var', 'tt']);
 const OBJ = '￼';
 const LETTER = /\p{L}/u;
+/** 连字符 / 点分的小写标识符（ai-agents、full-text-search、github.com）单独成段时不翻 */
+const SLUG = /^[a-z0-9]+(?:[-_./][a-z0-9]+)+$/;
+
+let hiddenMemo = new WeakMap<Element, boolean>();
+/** 有布局但 ≤1px：sr-only 一类只给读屏用的文字。没有布局（display:none、jsdom）不算 */
+function visuallyHidden(el: Element): boolean {
+  let v = hiddenMemo.get(el);
+  if (v === undefined) {
+    const r = el.getClientRects().length ? el.getBoundingClientRect() : undefined;
+    v = !!r && r.width <= 1 && r.height <= 1;
+    hiddenMemo.set(el, v);
+  }
+  return v;
+}
 
 export const isNoTranslate = (el: Element) =>
   el.getAttribute('translate') === 'no' || el.classList.contains('notranslate');
@@ -83,6 +99,7 @@ let seq = 0;
 /** 扫描 root 之下所有还没有归属的单元 */
 export function scan(root: Node): Unit[] {
   inlineMemo = new WeakMap();
+  hiddenMemo = new WeakMap();
   const out: Unit[] = [];
   if (root.nodeType === 1 && skipContainer(root as Element)) return out;
   if (root.nodeType === 1 && hasSkippedAncestor(root as Element)) return out;
@@ -119,9 +136,20 @@ function flush(parent: ParentNode & Node, run: ChildNode[], out: Unit[]) {
   while (b > a && blank(run[b - 1])) b--;
   if (a === b) return;
   const nodes = run.slice(a, b);
+  // 一排各自独立的行内元素（标签、按钮、面包屑），中间只隔空白 / 符号：各成一段，免得译文在它们之间串位
+  // （紧挨着、中间没有文本节点的不拆，那多半是同一个短语的不同样式）
+  const elements = nodes.filter(n => n.nodeType === 1 && !isAtom(n as Element));
+  const separated = elements.every((el, i) => i === 0 || el.previousSibling?.nodeType === 3);
+  if (elements.length >= 2 && separated && nodes.every(n => n.nodeType === 1 || !LETTER.test((n as Text).data))) {
+    for (const el of elements) flush(parent, [el], out);
+    return;
+  }
   const slots: Slot[] = [];
   const collect = (n: Node, chain: Element[]) => {
-    if (n.nodeType === 3) { if ((n as Text).data) slots.push({ node: n as Text, chain, atom: false }); return; }
+    if (n.nodeType === 3) {
+      if ((n as Text).data) slots.push({ node: n as Text, chain, atom: false, hidden: chain.some(visuallyHidden) });
+      return;
+    }
     if (n.nodeType !== 1) return;
     const el = n as Element;
     if (isAtom(el)) { slots.push({ node: el, chain, atom: true }); return; }
@@ -129,7 +157,8 @@ function flush(parent: ParentNode & Node, run: ChildNode[], out: Unit[]) {
     for (const c of Array.from(el.childNodes)) collect(c, next);
   };
   for (const n of nodes) collect(n, []);
-  if (!slots.some(s => !s.atom && LETTER.test((s.node as Text).data))) return;
+  if (!slots.some(s => !s.atom && !s.hidden && LETTER.test((s.node as Text).data))) return;
+  if (SLUG.test(slots.filter(s => !s.atom).map(s => (s.node as Text).data).join('').trim())) return;
   if (slots.some(s => owner.has(s.node))) return;
   const unit: Unit = { id: `u${++seq}`, parent, nodes, slots };
   for (const s of slots) owner.set(s.node, unit);
@@ -154,7 +183,8 @@ function atomText(el: Element) {
 
 export function serialize(unit: Unit): Run[] {
   const runs = unit.slots.map((s, i): Run =>
-    s.atom ? { t: atomText(s.node as Element), s: i, k: 1 } : { t: (s.node as Text).data.replace(/\s+/g, ' '), s: i });
+    s.atom ? { t: atomText(s.node as Element), s: i, k: 1 }
+      : { t: (s.node as Text).data.replace(/\s+/g, ' '), s: i, ...(s.hidden ? { k: 1 as const } : {}) });
   // 整段首尾的空白（缩进、换行）不送去翻译
   const first = runs.find(r => !r.k), last = runs.findLast(r => !r.k);
   if (first) first.t = first.t.trimStart();
@@ -177,32 +207,48 @@ function merge(unit: Unit, runs: Run[]): Run[] {
 }
 
 /**
- * 不翻译的原子槽（行内代码等）按原文重新锚定：框架对齐槽位时可能差一两个字符（真机见过「[5] npm instal[6]l 。」），
- * 而回填时原子只放原元素、丢弃这段译文，被挤到邻槽的「l」就会露在页面上。
- * 在整段译文里找原文：区间内的字符归原子槽，原子槽在区间外多占的字符还给相邻的槽。找不到原文就不动。
+ * 按原文重新锚定两类槽：不翻译的（行内代码、视觉隐藏的文字）和原文没有字母的（计数器「13」、符号）。
+ * 框架对齐槽位时可能差几个字符（真机见过「[5] npm instal[6]l 。」「手[13 的槽]表 13」），而这些槽回填时用不上译文 /
+ * 不该有字，被挤错位的字就会露在页面上。做法：在整段译文里找原文，区间内的字符归这个槽，这个槽在区间外多占的字符
+ * 还给区间外侧相邻的槽；只有空白的槽不接收文字，也还给相邻的槽。找不到原文（被译掉了）就不动。
  */
 export function anchorAtoms(sent: Run[], got: Run[]): Run[] {
   let full = '';
   const labels: number[] = [];
   for (const r of got) { full += r.t; for (let i = 0; i < r.t.length; i++) labels.push(r.s); }
-  for (const atom of sent) {
-    const text = atom.k ? atom.t.trim() : '';
+  const n = full.length;
+  /** 把 [from, to) 里标成 s 的字符改标成 fill */
+  const give = (from: number, to: number, s: number, fill: number) => { for (let i = from; i < to; i++) if (labels[i] === s) labels[i] = fill; };
+  for (const r of sent) {
+    const text = r.k || !LETTER.test(r.t) ? r.t.trim() : '';
     if (!text) continue;
     // 同样的文字出现多处时，选和这个槽现有字符重叠最多的那处
     let best = -1, overlap = -1;
     for (let p = full.indexOf(text); p >= 0; p = full.indexOf(text, p + 1)) {
-      let n = 0;
-      for (let i = p; i < p + text.length; i++) if (labels[i] === atom.s) n++;
-      if (n > overlap) { best = p; overlap = n; }
+      let hit = 0;
+      for (let i = p; i < p + text.length; i++) if (labels[i] === r.s) hit++;
+      if (hit > overlap) { best = p; overlap = hit; }
     }
     if (best < 0) continue;
     const end = best + text.length;
-    for (let i = best; i < end; i++) labels[i] = atom.s;
-    for (let i = best - 1; i >= 0 && labels[i] === atom.s; i--) labels[i] = i > 0 ? labels[i - 1] : -1;
-    for (let i = end; i < full.length && labels[i] === atom.s; i++) labels[i] = i + 1 < full.length ? labels[i + 1] : -1;
+    let left = best;
+    while (left > 0 && labels[left - 1] === r.s) left--;
+    let right = end;
+    while (right < n && labels[right] === r.s) right++;
+    give(left, best, r.s, left > 0 ? labels[left - 1] : -1);
+    give(end, right, r.s, right < n ? labels[right] : -1);
+    for (let i = best; i < end; i++) labels[i] = r.s;
+  }
+  const blank = new Set(sent.filter(r => !r.k && !r.t.trim()).map(r => r.s));
+  for (let i = 0; i < n; i++) {
+    if (!blank.has(labels[i])) continue;
+    let j = i;
+    while (j < n && labels[j] === labels[i]) j++;
+    give(i, j, labels[i], i > 0 ? labels[i - 1] : j < n ? labels[j] : -1);
+    i = j - 1;
   }
   const out: Run[] = [];
-  for (let i = 0; i < full.length; i++) {
+  for (let i = 0; i < n; i++) {
     const last = out[out.length - 1];
     if (last && last.s === labels[i]) last.t += full[i];
     else out.push({ t: full[i], s: labels[i] });
@@ -273,7 +319,7 @@ function inPlace(unit: Unit, runs: Run[]): boolean {
 
   const texts = new Map<Text, string>();
   slots.forEach((s, i) => {
-    if (s.atom) return;
+    if (s.atom || s.hidden) return;
     const node = s.node as Text;
     const t = assign.get(i) ?? '';
     if (node.data !== t) { texts.set(node, node.data); node.data = t; }
@@ -288,10 +334,10 @@ function inPlace(unit: Unit, runs: Run[]): boolean {
  * 新建的顶层节点会跑出原来的元素——比如视觉隐藏的「Open Menu」标签，译文就会露出来叠在页面上。
  */
 function plain(unit: Unit, text: string) {
-  const host = unit.slots.find(s => !s.atom && /\S/.test((s.node as Text).data));
+  const host = unit.slots.find(s => !s.atom && !s.hidden && /\S/.test((s.node as Text).data));
   const texts = new Map<Text, string>();
   for (const s of unit.slots) {
-    if (s.atom) continue;
+    if (s.atom || s.hidden) continue;
     const node = s.node as Text;
     const t = s === host ? text : '';
     if (node.data !== t) { texts.set(node, node.data); node.data = t; }

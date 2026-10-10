@@ -45,6 +45,8 @@ actor Translator {
     }
 
     private var sessions: [String: TranslationSession] = [:]
+    /// 已确认装好语言包的「源>目标>译法」：每批都查 LanguageAvailability 要几十到上百毫秒，装好了就不再查
+    private var installed: Set<String> = []
 
     func translate(_ units: [TextUnit], target: String, fluent: Bool, hint: String?) async -> (results: [UnitResult], missing: [String]) {
         var results: [UnitResult] = []
@@ -66,16 +68,19 @@ actor Translator {
         let availability = LanguageAvailability(preferredStrategy: fluent ? .highFidelity : .lowLatency)
         for (source, group) in groups {
             let sourceLanguage = Locale.Language(identifier: source)
-            switch await availability.status(from: sourceLanguage, to: targetLanguage) {
-            case .installed:
-                break
-            case .supported:
-                missing.append(source)
-                results += group.map { UnitResult(id: $0.id, source: source, error: "needsDownload") }
-                continue
-            default:
-                results += group.map { UnitResult(id: $0.id, source: source, skipped: true, error: "unsupported") }
-                continue
+            let pair = "\(source)>\(target)>\(fluent)"
+            if !installed.contains(pair) {
+                switch await availability.status(from: sourceLanguage, to: targetLanguage) {
+                case .installed:
+                    installed.insert(pair)
+                case .supported:
+                    missing.append(source)
+                    results += group.map { UnitResult(id: $0.id, source: source, error: "needsDownload") }
+                    continue
+                default:
+                    results += group.map { UnitResult(id: $0.id, source: source, skipped: true, error: "unsupported") }
+                    continue
+                }
             }
             let session = session(source: sourceLanguage, target: targetLanguage, fluent: fluent)
             results += await translate(group, source: source, session: session)

@@ -89,16 +89,17 @@ test('译文丢了槽位编号（-1）时归到顶层文字', () => {
   assert.equal(body.querySelector('p').textContent, '这里是一句话。');
 });
 
-test('纯文本译文留在原来的元素里，不露出视觉隐藏的标签', () => {
+test('一排只含视觉隐藏标签的链接各成一段，纯文本译文留在各自元素里，不露在外面', () => {
   const body = page(`<div><a href="#o"><span class="sr">Open Menu</span></a> <a href="#c"><span class="sr">Close Menu</span></a></div>`);
-  const [u] = scan(body);
-  apply(u, [{ t: '打开菜单 关闭菜单', s: -1 }]);
+  const units = scan(body);
+  assert.equal(units.length, 2);
+  apply(units[0], [{ t: '打开菜单', s: -1 }]);
+  apply(units[1], [{ t: '关闭菜单', s: -1 }]);
   const div = body.querySelector('div');
-  assert.equal(div.querySelectorAll('a').length, 2);
-  assert.equal(div.querySelector('a[href="#o"] span').textContent, '打开菜单 关闭菜单');
-  assert.equal(div.querySelector('a[href="#c"] span').textContent, '');
+  assert.equal(div.querySelector('a[href="#o"] span').textContent, '打开菜单');
+  assert.equal(div.querySelector('a[href="#c"] span').textContent, '关闭菜单');
   assert.ok(Array.from(div.childNodes).every(n => n.nodeType !== 3 || !/\S/.test(n.data)));
-  restore(u);
+  units.forEach(restore);
   assert.equal(div.textContent, 'Open Menu Close Menu');
 });
 
@@ -134,4 +135,26 @@ test('回填：带格式译文对齐偏一个字符，行内代码后不多出�
   apply(u, [{ t: '然后运行', s: head }, { t: ' npm instal', s: code }, { t: 'l 。', s: tail }]);
   assert.equal(body.querySelector('p').textContent, '然后运行 npm install 。');
   assert.equal(body.querySelector('code').textContent, 'npm install');
+});
+
+test('锚定：计数器槽多占两个以上字符也能整段还给前一槽', async () => {
+  const { anchorAtoms } = await import('../src/dom.ts');
+  assert.deepEqual(
+    anchorAtoms([{ t: 'Watch', s: 0 }, { t: '13', s: 1 }], [{ t: '手', s: 0 }, { t: '表 13', s: 1 }]),
+    [{ t: '手表 ', s: 0 }, { t: '13', s: 1 }]);
+});
+
+test('回填：按钮「Watch 13」译文跑进计数器时纠正，计数器只留数字', () => {
+  const body = page(`<a href="#"><span>Watch</span> <span class="c">13</span></a>`);
+  const [u] = scan(body);
+  const runs = serialize(u);
+  const word = runs.find(r => r.t === 'Watch').s, count = runs.find(r => r.t === '13').s;
+  apply(u, [{ t: '手', s: word }, { t: '表 13', s: count }]);
+  assert.equal(body.querySelector('.c').textContent, '13');
+  assert.equal(body.textContent.replace(/\s+/g, ''), '手表13');
+});
+
+test('切段：一排独立链接（主题标签）各成一段，连字符标识符不翻', () => {
+  const body = page(`<div><a href="#">ai-agents</a> <a href="#">Full text</a> · <a href="#">Vector search</a></div>`);
+  assert.deepEqual(scan(body).map(text), ['Full text', 'Vector search']);
 });
