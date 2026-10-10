@@ -1,0 +1,73 @@
+name: Build unsigned IPA (Release)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'App/**'
+      - 'Extension/**'
+      - 'Shared/**'
+      - 'web/**'
+      - 'project.yml'
+      - '.github/workflows/build-ipa.yml'
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 网页扩展（测试 + 打包）
+        working-directory: web
+        run: |
+          npm ci --no-fund --no-audit
+          npx tsc -p .
+          node --experimental-strip-types --test test/
+          node build.mjs
+
+      - name: 生成 Xcode 工程
+        run: |
+          brew install xcodegen >/dev/null
+          xcodegen generate
+          sw_vers
+          xcodebuild -version
+
+      - name: Build (无签名)
+        run: |
+          set -o pipefail
+          # 版本号 0.1.<CI 序号>（SideStore 按版本号判断更新），提交号写进 Info.plist（App 底部显示）
+          xcodebuild -project Verso.xcodeproj -scheme Verso -configuration Release \
+            MARKETING_VERSION=0.1.${{ github.run_number }} CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            VERSO_COMMIT=${GITHUB_SHA::7} \
+            -derivedDataPath build/dd \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee "$RUNNER_TEMP/build.log" | tail -40
+
+      - name: 编译报错
+        if: failure()
+        run: |
+          grep -E ": (error|warning): |BUILD FAILED" "$RUNNER_TEMP/build.log" | sed -E 's#^.*/verso/##' | sort -u | head -60
+
+      - name: 打包 IPA
+        run: |
+          set -euo pipefail
+          APP=build/dd/Build/Products/Release-iphoneos/Verso.app
+          test -d "$APP/PlugIns/VersoExtension.appex"
+          ls "$APP/PlugIns/VersoExtension.appex"
+          rm -rf out && mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          cd out && zip -qry Verso-unsigned.ipa Payload
+          ls -lh Verso-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Verso-unsigned-ipa
+          path: out/Verso-unsigned.ipa
+          retention-days: 30

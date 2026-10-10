@@ -1,0 +1,47 @@
+:root {
+  color-scheme: light dark;
+  --accent: #c96442;
+  --fg: #1f1e1d;
+  --muted: #73716b;
+  --line: rgba(0, 0, 0, .1);
+  --card: rgba(0, 0, 0, .04);
+  font: 14px/1.45 -apple-system, system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --accent: #d97757; --fg: #f0eee6; --muted: #a6a39b; --line: rgba(255, 255, 255, .12); --card: rgba(255, 255, 255, .06); }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 14px 16px 16px; min-width: 280px; color: var(--fg); }
+header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+header strong { font-size: 16px; }
+header span { color: var(--muted); font-size: 13px; }
+button { font: inherit; cursor: pointer; }
+.primary {
+  width: 100%; padding: 10px; border: 0; border-radius: 10px;
+  background: var(--accent); color: #fff; font-weight: 600; font-size: 15px;
+}
+.primary.on { background: var(--card); color: var(--fg); }
+.link { border: 0; background: none; color: var(--accent); padding: 0; }
+.note { margin: 6px 2px 10px; color: var(--muted); font-size: 12px; min-height: 1em; }
+.row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 0; border-top: 1px solid var(--line);
+}
+.row b { font-weight: 600; margin-left: 2px; }
+.row small { color: var(--muted); }
+select { font: inherit; color: inherit; background: none; border: 0; text-align: right; }
+.card { padding: 10px 12px; border-radius: 10px; background: var(--card); margin: 0 0 10px; font-size: 13px; }
+.warn { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.switch {
+  appearance: none; width: 40px; height: 24px; border-radius: 12px; margin: 0;
+  background: var(--line); position: relative; transition: background .2s; flex: none;
+}
+.switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .2); transition: transform .2s;
+}
+.switch:checked { background: var(--accent); }
+.switch:checked::after { transform: translateX(16px); }
+details { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+summary { color: var(--muted); cursor: pointer; }
+pre { white-space: pre-wrap; font-size: 11px; background: var(--card); padding: 8px; border-radius: 8px; margin: 8px 0 0; }

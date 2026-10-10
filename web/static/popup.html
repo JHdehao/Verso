@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <strong>Verso</strong>
+    <span id="pair"></span>
+  </header>
+
+  <main id="page" hidden>
+    <button id="toggle" class="primary">翻译此页</button>
+    <p id="status" class="note"></p>
+
+    <div id="need" class="card warn" hidden>
+      <span id="needText"></span>
+      <button id="download" class="link">在 Verso 中下载</button>
+    </div>
+
+    <label class="row">
+      <span>总是翻译<b id="langName"></b></span>
+      <input type="checkbox" id="alwaysLang" class="switch">
+    </label>
+    <label class="row">
+      <span>本站 <small id="host"></small></span>
+      <select id="site">
+        <option value="">跟随语言</option>
+        <option value="always">总是翻译</option>
+        <option value="never">从不翻译</option>
+      </select>
+    </label>
+  </main>
+
+  <p id="unavailable" class="card" hidden>这个页面不能翻译。如果是普通网页，请在「设置 → App → Safari → 扩展 → Verso」里允许访问所有网站。</p>
+
+  <details>
+    <summary>设置</summary>
+    <label class="row">
+      <span>译成</span>
+      <select id="target"></select>
+    </label>
+    <label class="row">
+      <span>译法</span>
+      <select id="fluent">
+        <option value="1">流畅（Apple 智能）</option>
+        <option value="0">快速</option>
+      </select>
+    </label>
+    <button id="selftest" class="link">自检</button>
+    <pre id="selftestOut" hidden></pre>
+  </details>
+
+  <script src="popup.js"></script>
+</body>
+</html>

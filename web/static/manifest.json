@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Verso",
+  "description": "用苹果本机翻译，把网页原样译成你的语言，并记住哪些网站要自动翻译。",
+  "version": "1.0",
+  "icons": {
+    "48": "icon-48.png",
+    "96": "icon-96.png",
+    "128": "icon-128.png",
+    "256": "icon-256.png",
+    "512": "icon-512.png"
+  },
+  "background": { "scripts": ["background.js"], "persistent": false },
+  "content_scripts": [{ "js": ["content.js"], "matches": ["<all_urls>"], "run_at": "document_end" }],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": { "16": "toolbar-16.png", "32": "toolbar-32.png" }
+  },
+  "commands": {
+    "toggle-translation": {
+      "suggested_key": { "default": "Alt+Shift+T", "mac": "Alt+Command+T" },
+      "description": "翻译此页 / 显示原文"
+    }
+  },
+  "permissions": ["nativeMessaging", "storage"]
+}

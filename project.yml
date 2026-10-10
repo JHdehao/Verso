@@ -1,0 +1,69 @@
+# XcodeGen 工程描述：CI 里 `xcodegen generate` 生成 Verso.xcodeproj（不入库）
+name: Verso
+options:
+  bundleIdPrefix: com.tj
+  deploymentTarget:
+    iOS: "26.4"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    VERSO_COMMIT: ""
+    TARGETED_DEVICE_FAMILY: "1,2"
+targets:
+  Verso:
+    type: application
+    platform: iOS
+    sources:
+      - App/Sources
+      - App/Assets.xcassets
+      - Shared
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Verso
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        VersoCommit: $(VERSO_COMMIT)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UISupportedInterfaceOrientations~ipad:
+          [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        CFBundleURLTypes:
+          - CFBundleURLName: com.tj.verso
+            CFBundleURLSchemes: [verso]
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tj.verso
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - target: VersoExtension
+        embed: true
+  VersoExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Extension/Sources
+      - Shared
+      - path: Extension/Resources
+        buildPhase: resources
+    info:
+      path: Extension/Info.plist
+      properties:
+        CFBundleDisplayName: Verso
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.Safari.web-extension
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SafariWebExtensionHandler
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tj.verso.extension
+schemes:
+  Verso:
+    build:
+      targets:
+        Verso: all

@@ -1,0 +1,8 @@
+node_modules/
+Extension/Resources/
+*.xcodeproj/
+App/Info.plist
+Extension/Info.plist
+build/
+out/
+.DS_Store
