@@ -60,7 +60,7 @@
 - 用 `IntersectionObserver`（rootMargin 为一屏）只翻可见区域和下一屏，进入视口前就翻好。
 - 用 `MutationObserver` 处理 SPA 和无限滚动：先去抖，再用 `requestIdleCallback` 处理；带「我自己改的」标记，避免自己触发自己。
 - background 每 16 ms 合并一次请求（上限 40 段或 6000 字符），一次原生调用翻完一批，降低 IPC 开销。
-- 缓存：background 用 IndexedDB 存「(源语言, 目标语言, 片段哈希) → 译文片段」，上限 20 MB，按 LRU 淘汰；回访页面秒出。
+- 缓存：两级，见 §3.8。
 
 ### 3.5 永久规则（解决痛点）
 优先级从高到低：
@@ -82,6 +82,51 @@
 - 质量策略：高保真（Apple Intelligence）/ 低延迟，存进 App Group，扩展进程读取。
 - 试译沙盒：粘贴一段 HTML，对比回填效果（也作为回归测试用例）。
 
+### 3.8 缓存（2026-10-10 定稿）
+目标：回访页面、同站重复的导航/按钮不再走原生调用——iOS 上每次 `sendNativeMessage` 都要唤醒扩展进程（R3），缓存放在 JS 侧才能连这一跳一起省掉。
+
+**分层**
+- L1 内容脚本 `Map`（已有，单页 3000 条）：同页重复段落零消息。目标语言 / 译法变了要清空（现有 bug：切换后旧语言译文会被复用）。
+- L2 background 的 IndexedDB（`verso-cache`，扩展自己的源，不碰网站存储）：跨页面、跨标签页、跨重启。
+- 不在原生侧再做一层：命中原生缓存仍要付唤醒代价，收益小于复杂度。R1 若失败改走宿主 App，L2 照样挡在前面不用改。
+
+**键与值**
+- 键 = `SHA-256(版本|目标语言|译法|页面语言基础码|cacheKey(runs))` 取前 128 位十六进制。`crypto.subtle` 现成；原文不入库，只存哈希。
+- 页面语言进键：短句识别靠它兜底，不同 hint 可能识别出不同源语言。
+- 版本常量 `CACHE_V`：改了 `serialize` / `merge` / Swift 对齐逻辑就 +1，旧条目自然失效、按 LRU 老化。
+- 值 `{ r: Run[] | null, src, d: 天数戳, n: 字节估算 }`，`r = null` 表示「已是目标语言」。
+- **只缓存稳定结果**：有译文的、`skip` 且带 `src` 无 `err` 的。`needsDownload` / `unsupported` / 出错一律不存（装了语言包后要能重翻）。
+
+**读写流程（background 拦截 `op: 'translate'`）**
+1. 一个只读事务批量 `get` → 命中的直接组进结果。
+2. 未命中的单元原样转发原生；全命中就不调原生。
+3. 先 `sendResponse`，再开读写事务写入新结果，不阻塞回填。
+4. 数据库打不开 / 事务出错 → 整层旁路，退化成今天的行为，绝不因缓存挡住翻译。
+5. 数据库连接在模块作用域记住 Promise；iOS 上 background 被杀后下次唤醒重开。
+
+**容量与淘汰**
+- `meta` 仓库记总字节数，和条目写入在同一事务里更新（写前 `get` 旧条目扣掉旧 `n`，覆盖不重复计）。
+- 超过 20 MB → 按索引 `d` 升序游标删到 16 MB（留回差，避免每次写都淘汰）。
+- LRU 按天粗粒度：命中时 `d` 不是今天才回写，回访热点每天最多写一次。
+
+**隐私**
+- 隐私浏览窗口（`extension.inIncognitoContext`）只读不写，请求带 `priv: 1`。
+- 弹窗「设置」里显示「缓存 x.x MB」+「清除」（`bg: 'cache-clear'` → 清空两个仓库）。
+
+**可观测**：响应里加 `hits`（命中段数），弹窗自检显示「缓存命中 x/y，读取 n ms」；目标是 40 段一批读取 < 10 ms。
+
+**改动清单**
+| 文件 | 改什么 |
+|---|---|
+| `web/src/cache.ts`（新，约 100 行） | 键计算、IDB 适配、`split`（分命中 / 未命中）、`cacheable`、淘汰；存储层抽成接口，单测用 `Map` 实现 |
+| `web/src/background.ts` | `translate` 走缓存；新增 `cache-stat` / `cache-clear` |
+| `web/src/protocol.ts` | 请求加 `priv?`，响应加 `hits?`（不进原生，Swift 侧不用改） |
+| `web/src/content.ts` | 带 `priv`；切换目标语言 / 译法时清 L1 |
+| `web/src/popup.ts` + `popup.html` | 缓存大小、清除按钮、自检显示命中 |
+| `web/test/cache.test.mjs` | 拆分 / 合并、可缓存判定、淘汰回差、版本隔离（不为此引入 fake-indexeddb，IDB 适配层靠真机自检） |
+
+**刻意不做**：跨标签页同键在途请求去重（概率低）；预取下一页；按站点排除缓存（`never` 规则已经不翻）。
+
 ## 4. 平台与构建
 - iOS / iPadOS 26.4+（主），macOS 26.4+（共享同一份代码）。
 - 工程：Xcode 多平台 Safari Web Extension 模板；JS 用纯 TypeScript，经 esbuild 打成单文件。
@@ -95,10 +140,12 @@
 | R3 | iOS 原生消息每次唤醒扩展进程的延迟 | 合批 + 缓存 + 预取下一屏 |
 | R4 | 扩展进程不能弹下载窗 | 返回 `needsDownload`，弹窗里的按钮跳转宿主 App |
 | R5 | 用户没开「允许所有网站」时，每个站点都要授权 | 引导页说明；弹窗里检测到后提示 |
+| R6 | Safari 扩展 background 的 IndexedDB 是否可用、iOS 杀进程后是否留存、ITP 7 天清理是否波及扩展源 | 真机自检看命中率；隔天回访再测；不行就换 `storage.local`（同一接口，上限降到 5 MB） |
 
 ## 6. 里程碑
 - **M0 可行性验证（先做）**：最小扩展 + 原生 handler 调 `TranslationSession(installedSource:)` 翻译一句带链接的 AttributedString，真机打印结果和耗时。验证 R1、R2。
 - M1：切段 / 序列化 / 回填 + 可见区调度，替换模式完整可用。
 - M2：永久规则 + 弹窗 + 原文浮层。
-- M3：宿主 App（语言包、策略、试译沙盒）+ 缓存。
+- M1.5：缓存（§3.8）。纯 JS、不依赖 R1 结论，可以先做，和 M0 真机验证一起测。
+- M3：宿主 App（语言包、策略、试译沙盒）。
 - M4：macOS、双语模式、属性翻译、shadow DOM、站点适配表（X / Reddit / GitHub）。

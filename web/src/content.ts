@@ -211,6 +211,7 @@ async function detectLanguage(): Promise<string | undefined> {
 
 function reevaluate(restart = false) {
   const want = shouldTranslate();
+  if (restart) cache.clear();
   if (active && (!want || restart)) stop();
   if (want) start();
 }
