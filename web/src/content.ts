@@ -22,6 +22,7 @@ let done = 0;
 let cached = 0;
 /** 从打开页面（导航开始）算起 */
 let first: number | undefined;
+let startAt: number | undefined;
 /** [总耗时, 次数] */
 const lat = { lookup: [0, 0], translate: [0, 0] };
 const missing = new Set<string>();
@@ -251,6 +252,7 @@ function start() {
   active = true;
   failed = done = cached = 0;
   first = undefined;
+  startAt = Math.round(performance.now());
   hint = pageLang;
   lat.lookup = [0, 0];
   lat.translate = [0, 0];
@@ -291,7 +293,7 @@ function stop() {
 
 function state(): TabState {
   return { host: siteKey(location.hostname), lang: pageLang, active, units: units.size, done, cached, failed, missing: [...missing],
-    first, lookupMs: avg('lookup'), translateMs: avg('translate') };
+    first, startAt, lookupMs: avg('lookup'), translateMs: avg('translate') };
 }
 
 /** 页面语言：先信 <html lang>，没写就取一段正文问原生侧 */

@@ -21,6 +21,7 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 enum NativeRequest: Sendable {
     case translate(units: [TextUnit], target: String, fluent: Bool, hint: String?)
     case warm(target: String, fluent: Bool, hint: String?)
+    case diag(target: String)
     case detect(String)
     case capabilities
     case invalid(String)
@@ -48,6 +49,8 @@ enum NativeRequest: Sendable {
                 target: message["target"] as? String ?? "zh-Hans",
                 fluent: (message["fluent"] as? NSNumber)?.boolValue ?? true,
                 hint: message["hint"] as? String)
+        case "diag":
+            self = .diag(target: message["target"] as? String ?? "zh-Hans")
         case "detect":
             self = .detect(message["text"] as? String ?? "")
         case "capabilities":
@@ -60,9 +63,11 @@ enum NativeRequest: Sendable {
     func handle() async -> [String: Any] {
         switch self {
         case let .translate(units, target, fluent, hint):
+            let start = Date()
             let (results, missing) = await Translator.shared.translate(units, target: target, fluent: fluent, hint: hint)
             return [
                 "ok": true,
+                "nms": Int(Date().timeIntervalSince(start) * 1000),
                 "missing": missing,
                 "results": results.map { result -> [String: Any] in
                     var out: [String: Any] = ["id": result.id]
@@ -76,6 +81,8 @@ enum NativeRequest: Sendable {
         case let .warm(target, fluent, hint):
             await Translator.shared.warm(source: hint, target: target, fluent: fluent)
             return ["ok": true]
+        case let .diag(target):
+            return ["ok": true, "lines": await Translator.shared.diagnose(target: target)]
         case let .detect(text):
             guard let lang = Translator.detect(text, hint: nil) else { return ["ok": false, "error": "无法识别"] }
             return ["ok": true, "lang": lang]

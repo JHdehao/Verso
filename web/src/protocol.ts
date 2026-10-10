@@ -32,6 +32,8 @@ export type TranslateResponse = {
   missing?: string[];
   error?: string;
   ms?: number;
+  /** 原生侧翻译本身的耗时；ms - nms ≈ 消息往返和唤醒扩展进程 */
+  nms?: number;
   /** 其中来自缓存的段数 */
   hits?: number;
 };
@@ -43,13 +45,17 @@ export type LookupRequest = Omit<TranslateRequest, 'op'> & { op: 'lookup' };
 export type WarmRequest = { op: 'warm'; target: string; fluent: boolean; hint?: string };
 
 export type DetectRequest = { op: 'detect'; text: string };
+
+/** 自检：带格式翻译用哪种属性携带槽位编号、哪档译法能保住格式 */
+export type DiagRequest = { op: 'diag'; target: string };
+export type DiagResponse = { ok: boolean; lines?: string[]; error?: string };
 export type DetectResponse = { ok: boolean; lang?: string; error?: string };
 
 export type CapabilitiesRequest = { op: 'capabilities' };
 /** fluent = 本机能用「流畅」（Apple 智能）；不能时 reason 说明原因 */
 export type CapabilitiesResponse = { ok: boolean; fluent?: boolean; reason?: string; error?: string };
 
-export type NativeRequest = TranslateRequest | WarmRequest | DetectRequest | CapabilitiesRequest;
+export type NativeRequest = TranslateRequest | WarmRequest | DetectRequest | DiagRequest | CapabilitiesRequest;
 
 /** auto = 按站点 / 语言规则自动翻译（关掉后只能手动翻译此页）；cache = 跨页面缓存译文；cover = 防闪烁（第一屏译好前先隐藏页面） */
 export type Settings = { target: string; fluent: boolean; auto: boolean; cache: boolean; cover: boolean };
@@ -75,6 +81,8 @@ export type TabState = {
   failed: number;
   /** 端到端耗时（ms）：打开页面到第一段回填；查缓存、翻译的平均往返 */
   first?: number;
+  /** 开始翻译的时刻（从打开页面算） */
+  startAt?: number;
   lookupMs?: number;
   translateMs?: number;
   missing: string[];

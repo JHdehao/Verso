@@ -11,6 +11,7 @@
   :root { --accent: #d97757; --fg: #f0eee6; --muted: #a6a39b; --line: rgba(255, 255, 255, .12); --card: rgba(255, 255, 255, .06); }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; padding: 14px 16px 16px; min-width: 280px; color: var(--fg); }
 header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
 header strong { font-size: 16px; }

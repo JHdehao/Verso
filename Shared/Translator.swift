@@ -45,6 +45,8 @@ actor Translator {
     }
 
     private var sessions: [String: TranslationSession] = [:]
+    /// 带格式整批翻译连续失败的次数（按语言对 + 译法）。到 3 次就当这一档不支持带格式，后面整批直接纯文本，省掉逐段重试
+    private var formatFailures: [String: Int] = [:]
 
     func translate(_ units: [TextUnit], target: String, fluent: Bool, hint: String?) async -> (results: [UnitResult], missing: [String]) {
         var results: [UnitResult] = []
@@ -78,9 +80,53 @@ actor Translator {
                 continue
             }
             let session = session(source: sourceLanguage, target: targetLanguage, fluent: fluent)
-            results += await translate(group, source: source, session: session)
+            results += await translate(group, source: source, session: session, key: "\(source)>\(target)>\(fluent)")
         }
         return (results, missing)
+    }
+
+    /// 自检：同一句带链接 / 行内代码的英文，槽位编号分别用自定义属性和链接属性携带，两档译法各翻一次，看格式能不能保住
+    func diagnose(target: String) async -> [String] {
+        let parts: [(String, Int, Bool)] = [
+            ("Read the ", 0, false), ("documentation", 1, false), (" before you ", 2, false),
+            ("start", 3, false), (", then run ", 4, false), ("npm install", 5, true), (".", 6, false),
+        ]
+        let source = Locale.Language(identifier: "en")
+        let targetLanguage = Locale.Language(identifier: target)
+        var lines: [String] = []
+        for fluent in [false, true] {
+            let session = TranslationSession(installedSource: source, target: targetLanguage, preferredStrategy: fluent ? .highFidelity : .lowLatency)
+            for useLink in [false, true] {
+                let label = "\(fluent ? "流畅" : "快速")/\(useLink ? "链接属性" : "自定义属性")"
+                var text = AttributedString()
+                for (piece, slot, skip) in parts {
+                    var run = AttributedString(piece)
+                    if useLink { run.link = URL(string: "verso:\(slot)") } else { run[VersoSlotAttribute.self] = slot }
+                    if skip { run[AttributeScopes.TranslationAttributes.SkipTranslationAttribute.self] = true }
+                    text.append(run)
+                }
+                let start = Date()
+                do {
+                    let responses = try await session.translations(from: [TranslationSession.Request(sourceText: text, clientIdentifier: "d")])
+                    let ms = Int(Date().timeIntervalSince(start) * 1000)
+                    guard let response = responses.first else { lines.append("\(label) \(ms)ms 空结果"); continue }
+                    guard let attributed = response.attributedTargetText else {
+                        lines.append("\(label) \(ms)ms 无属性: \(response.targetText)")
+                        continue
+                    }
+                    var out = ""
+                    for run in attributed.runs {
+                        let piece = String(attributed[run.range].characters)
+                        let slot: Int? = useLink ? run.link.flatMap { Int($0.absoluteString.dropFirst(6)) } : run[VersoSlotAttribute.self]
+                        out += slot.map { "[\($0)]\(piece)" } ?? piece
+                    }
+                    lines.append("\(label) \(ms)ms \(out)")
+                } catch {
+                    lines.append("\(label) 失败: \(error)")
+                }
+            }
+        }
+        return lines
     }
 
     /// 预热：页面一判定要翻就调用，先把扩展进程叫醒、建好会话、翻一个词让模型加载，第一批正文不用再等冷启动
@@ -93,10 +139,20 @@ actor Translator {
         _ = try? await session(source: sourceLanguage, target: targetLanguage, fluent: fluent).translate("Hello")
     }
 
-    private func translate(_ group: [TextUnit], source: String, session: TranslationSession) async -> [UnitResult] {
-        let requests = group.map { TranslationSession.Request(sourceText: Self.attributed($0.runs), clientIdentifier: $0.id) }
-        if let responses = try? await session.translations(from: requests) {
-            return responses.map { UnitResult(id: $0.clientIdentifier ?? "", runs: Self.runs($0), source: source) }
+    private func translate(_ group: [TextUnit], source: String, session: TranslationSession, key: String) async -> [UnitResult] {
+        if formatFailures[key, default: 0] < 3 {
+            let requests = group.map { TranslationSession.Request(sourceText: Self.attributed($0.runs), clientIdentifier: $0.id) }
+            if let responses = try? await session.translations(from: requests) {
+                formatFailures[key] = 0
+                return responses.map { UnitResult(id: $0.clientIdentifier ?? "", runs: Self.runs($0), source: source) }
+            }
+            formatFailures[key, default: 0] += 1
+        }
+        if formatFailures[key, default: 0] >= 3 {
+            let plain = group.map { TranslationSession.Request(sourceText: $0.plain, clientIdentifier: $0.id) }
+            if let responses = try? await session.translations(from: plain) {
+                return responses.map { UnitResult(id: $0.clientIdentifier ?? "", runs: [TextRun(text: $0.targetText, slot: -1)], source: source) }
+            }
         }
         // 整批失败多半只是个别段落属性对不齐：逐段重试带格式，只有仍失败的那段才退回纯文本（会丢掉段内链接等格式）
         var results: [UnitResult] = []

@@ -1,4 +1,4 @@
-import type { CapabilitiesResponse, Rules, Run, TabState, TranslateResponse } from './protocol';
+import type { CapabilitiesResponse, DiagResponse, Rules, Run, TabState, TranslateResponse } from './protocol';
 import { api, LANGUAGES, languageName, loadRules, siteKey } from './rules';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -56,7 +56,8 @@ function render() {
 
 async function cacheInfo() {
   const r = await api.runtime.sendMessage({ bg: 'cache-stat' }).catch(() => undefined);
-  $('cacheInfo').textContent = r?.ok ? `已用 ${(r.bytes / 2 ** 20).toFixed(1)} MB / 200 MB` : '缓存不可用';
+  const used = !r?.ok ? '' : r.bytes < 2 ** 20 ? `${Math.ceil(r.bytes / 1024)} KB` : `${(r.bytes / 2 ** 20).toFixed(1)} MB`;
+  $('cacheInfo').textContent = used ? `已用 ${used} / 200 MB` : '缓存不可用';
 }
 
 async function selftest() {
@@ -73,14 +74,19 @@ async function selftest() {
   const r = res.results?.[0];
   const text = r?.runs?.map(x => (x.s < 0 ? x.t : `[${x.s}]${x.t}`)).join('') ?? '';
   out.textContent = [
-    `ok: ${res.ok}  耗时: ${res.ms ?? '?'} ms`,
+    `ok: ${res.ok}  往返: ${res.ms ?? '?'} ms  原生翻译: ${res.nms ?? '?'} ms`,
     r?.src ? `源语言: ${r.src}` : '',
     text ? `译文: ${text}` : '',
     r?.err ? `单元错误: ${r.err}` : '',
     res.missing?.length ? `缺语言包: ${res.missing.join(', ')}` : '',
     res.error ? `错误: ${res.error}` : '',
-    tab?.active ? `本页：打开到首段译文 ${tab.first ?? '-'} ms，查缓存往返 ${tab.lookupMs ?? '-'} ms，翻译往返 ${tab.translateMs ?? '-'} ms` : '',
+    tab?.active ? `本页：开始翻译 ${tab.startAt ?? '-'} ms，打开到首段译文 ${tab.first ?? '-'} ms，查缓存往返 ${tab.lookupMs ?? '-'} ms，翻译往返 ${tab.translateMs ?? '-'} ms` : '',
   ].filter(Boolean).join('\n');
+  out.textContent += '\n带格式诊断中…';
+  const diag: DiagResponse = await api.runtime
+    .sendMessage({ op: 'diag', target: rules.settings.target })
+    .catch((e: unknown) => ({ ok: false, error: String(e) }));
+  out.textContent = out.textContent.replace('带格式诊断中…', diag.lines?.join('\n') ?? `诊断失败: ${diag.error ?? '?'}`);
 }
 
 async function main() {
