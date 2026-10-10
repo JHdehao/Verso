@@ -171,19 +171,19 @@ test('切段：按钮和 role=button 各成一段，不和旁边的按钮、提�
   assert.deepEqual(scan(body).map(text), ['Code', 'More options', 'Sign in']);
 });
 
-test('只翻正文：跳过导航、按钮、单个词、短链接，保留正文、标题和长链接标题', async () => {
+test('只翻正文：菜单 / 导航照翻，跳过按钮、标识符、正文里的单个词和短链接', async () => {
   const { scanOptions } = await import('../src/dom.ts');
   scanOptions.bodyOnly = true;
   try {
     const body = page(`
-      <nav><a href="#">Code</a> <a href="#">Pull requests</a></nav>
+      <nav><a href="#">Code</a> <a href="#">Pull requests</a> <a href="#">JHdehao/Conch-dev</a> <a href="#">ghidra</a> <a href="#">NationalSecurityAgency</a></nav>
       <div><button><span>Watch</span> <span>1172</span></button></div>
       <h2>About</h2>
       <p>Ghidra is a Software Reverse Engineering (SRE) Framework</p>
       <ul><li><a href="#">Readme</a></li><li><a href="#">Code of conduct</a></li></ul>
       <span>Public</span>
       <div><a href="#">Show HN: A faster way to build apps</a></div>`);
-    assert.deepEqual(scan(body).map(text), ['About', 'Ghidra is a Software Reverse Engineering (SRE) Framework', 'Show HN: A faster way to build apps']);
+    assert.deepEqual(scan(body).map(text), ['Code', 'Pull requests', 'About', 'Ghidra is a Software Reverse Engineering (SRE) Framework', 'Show HN: A faster way to build apps']);
   } finally {
     scanOptions.bodyOnly = false;
   }
@@ -210,4 +210,9 @@ test('锚定：译文里原样保留的名字被切掉尾巴时还回来', async
   assert.deepEqual(
     anchorAtoms([{ t: 'ryanmkurtz', s: 0 }, { t: ' ', s: 1 }, { t: '2 days ago', s: 2 }], [{ t: 'ryanmkurt', s: 0 }, { t: 'z 2天前', s: 2 }]),
     [{ t: 'ryanmkurtz', s: 0 }, { t: ' 2天前', s: 2 }]);
+});
+
+test('切段：被 CSS 排成块的 span 各成一段（菜单项标题和说明）', () => {
+  const body = page(`<style>.t,.d{display:block}</style><a href="#"><span class="t">GitHub Copilot</span><span class="d">Write better code with AI</span></a>`);
+  assert.deepEqual(scan(body).map(text), ['GitHub Copilot', 'Write better code with AI']);
 });

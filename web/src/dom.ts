@@ -55,23 +55,28 @@ const countish = (t: string) => !LETTER.test(t.replace(COUNT, ''));
 /** 切段选项：bodyOnly = 只翻正文（跳过按钮、导航、单个词、短链接），由内容脚本按设置写入；测试里默认关 */
 export const scanOptions = { bodyOnly: false };
 
-/** 界面控件和导航：里面的文字是 UI，不是正文 */
-const UI = [
-  'button', 'summary', 'select', 'label', 'nav', '[aria-hidden="true"]',
-  ...['button', 'tab', 'menuitem', 'option', 'switch', 'checkbox', 'radio', 'navigation', 'menu', 'menubar', 'tablist', 'toolbar']
-    .map(r => `[role="${r}"]`),
+/** 界面控件：里面的文字（按钮、标签页、开关……）不翻，图标、计数器挤在一起最容易错位 */
+const CONTROL = [
+  'button', 'summary', 'select', 'label', '[aria-hidden="true"]',
+  ...['button', 'tab', 'switch', 'checkbox', 'radio', 'option'].map(r => `[role="${r}"]`),
 ].join(',');
+/** 菜单和导航：每一条是独立的一段文字，翻了不会错位，短的也照翻 */
+const MENU = ['nav', ...['navigation', 'menu', 'menubar', 'menuitem', 'dialog'].map(r => `[role="${r}"]`)].join(',');
+/** 标识符：纯英文、没有空格，且带 / . _ - 或数字、驼峰、全小写（仓库名、文件名、用户名、分支名） */
+const ident = (t: string) =>
+  /^[\x21-\x7e]+$/.test(t) && (/[/._\-\d]/.test(t) || /[a-z][A-Z]/.test(t) || /^[a-z]+$/.test(t));
 const CJK = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}]/gu;
 /** 词数：空格分词的语言数词，中日韩按两个字算一个词 */
 function wordCount(t: string) {
   const cjk = t.match(CJK)?.length ?? 0;
   return Math.ceil(cjk / 2) + (t.replace(CJK, ' ').match(/\p{L}[\p{L}\p{N}'’-]*/gu)?.length ?? 0);
 }
-/** 只翻正文时跳过：控件 / 导航里的、单个词的（标题除外）、不超过 3 个词的单独链接 */
+/** 只翻正文时跳过：控件里的、标识符；菜单 / 导航之外再跳过单个词（标题除外）和不超过 3 个词的单独链接 */
 function looksLikeUI(parent: ParentNode & Node, nodes: ChildNode[], text: string) {
   const el = parent.nodeType === 11 ? (parent as ShadowRoot).host : (parent as Element);
   if (!el?.closest) return false;
-  if (el.closest(UI)) return true;
+  if (el.closest(CONTROL) || ident(text)) return true;
+  if (el.closest(MENU)) return false;
   const n = wordCount(text);
   if (n <= 1 && !/^h[1-6]$/.test(el.localName)) return true;
   const lone = nodes.length === 1 && nodes[0].nodeType === 1 && (nodes[0] as Element).localName === 'a';
@@ -80,6 +85,16 @@ function looksLikeUI(parent: ParentNode & Node, nodes: ChildNode[], text: string
 
 let hiddenMemo = new WeakMap<Element, boolean>();
 let renderedMemo = new WeakMap<Element, boolean>();
+let displayMemo = new WeakMap<Element, boolean>();
+/** CSS 把行内标签排成了块（菜单项里标题、说明两个 span 上下排）：按块处理，各自成段，不连成「GitHub CopilotWrite better code」 */
+function blockish(el: Element): boolean {
+  let v = displayMemo.get(el);
+  if (v === undefined) {
+    v = /^(block|flex|grid|list-item|table)/.test(el.ownerDocument.defaultView?.getComputedStyle(el).display ?? '');
+    displayMemo.set(el, v);
+  }
+  return v;
+}
 /** 有没有布局盒子（display:none 的没有）；jsdom 里都没有，不会触发混排判断 */
 function rendered(el: Element | null): boolean {
   if (!el) return true;
@@ -120,7 +135,7 @@ let inlineMemo = new WeakMap<Element, boolean>();
 export function inlineOnly(el: Element): boolean {
   if (isAtom(el)) return true;
   // 按钮（button 不在 INLINE 里、role=button 的链接 / span）是界面上独立的一块：自成一段，不和旁边的按钮、提示框并在一起
-  if (!INLINE.has(el.localName) || el.getAttribute('role') === 'button') return false;
+  if (!INLINE.has(el.localName) || el.getAttribute('role') === 'button' || blockish(el)) return false;
   let m = inlineMemo.get(el);
   if (m === undefined) {
     m = true;
@@ -139,6 +154,7 @@ export function scan(root: Node): Unit[] {
   inlineMemo = new WeakMap();
   hiddenMemo = new WeakMap();
   renderedMemo = new WeakMap();
+  displayMemo = new WeakMap();
   const out: Unit[] = [];
   if (root.nodeType === 1 && skipContainer(root as Element)) return out;
   if (root.nodeType === 1 && hasSkippedAncestor(root as Element)) return out;
