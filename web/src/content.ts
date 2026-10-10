@@ -49,6 +49,8 @@ let cover: HTMLStyleElement | undefined;
 /** 首屏段落已出现，翻译计时已开始 */
 let coverArmed = false;
 let inflight = 0;
+/** 上次调用原生的时刻（送翻 / 预热） */
+let lastNative = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let io: IntersectionObserver | undefined;
 let mo: MutationObserver | undefined;
@@ -207,6 +209,7 @@ async function send(batch: { unit: Unit; req: UnitRequest; key: string }[]) {
   // 已经 lookup 过，background 只管写回；隐私窗口不写
   const msg: TranslateRequest = { op: 'translate', cache: cacheMode() === 'rw' ? 'wo' : undefined, ...request(batch.map(b => b.req)) };
   const t0 = performance.now();
+  lastNative = t0;
   let res: TranslateResponse;
   try {
     res = await api.runtime.sendMessage(msg);
@@ -346,6 +349,16 @@ function reevaluate(restart = false) {
   if (want) start();
 }
 
+function warm() {
+  lastNative = performance.now();
+  api.runtime.sendMessage({ op: 'warm', target: rules.settings.target, fluent: rules.settings.fluent, hint: pageLang }).catch(() => {});
+}
+
+// 读了一会儿再滚动：扩展进程可能已被系统回收（冷启动约 1 秒），先叫醒，下一屏送翻时不用再等
+addEventListener('scroll', () => {
+  if (active && performance.now() - lastNative > 5000) warm();
+}, { passive: true });
+
 const whenBody = () => new Promise<void>(ok => {
   if (document.body) return ok();
   const o = new MutationObserver(() => { if (document.body) { o.disconnect(); ok(); } });
@@ -374,7 +387,7 @@ async function main() {
   const early = decidable();
   if (early && shouldTranslate()) {
     if (rules.settings.cover && document.readyState === 'loading') coverPage();
-    api.runtime.sendMessage({ op: 'warm', target: rules.settings.target, fluent: rules.settings.fluent, hint: pageLang }).catch(() => {});
+    warm();
   }
   await whenBody();
   if (early) reevaluate();

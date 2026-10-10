@@ -74,7 +74,8 @@ async function selftest() {
   const r = res.results?.[0];
   const text = r?.runs?.map(x => (x.s < 0 ? x.t : `[${x.s}]${x.t}`)).join('') ?? '';
   out.textContent = [
-    `ok: ${res.ok}  往返: ${res.ms ?? '?'} ms  原生翻译: ${res.nms ?? '?'} ms`,
+    `ok: ${res.ok}  往返: ${res.ms ?? '?'} ms  原生翻译: ${res.nms ?? '?'} ms${res.cold ? '（冷进程）' : ''}`,
+    res.timing ? `原生分段：识别 ${res.timing.detect ?? 0} / 查语言包 ${res.timing.avail ?? 0} / 会话+翻译 ${res.timing.translate ?? 0} ms` : '',
     r?.src ? `源语言: ${r.src}` : '',
     text ? `译文: ${text}` : '',
     r?.err ? `单元错误: ${r.err}` : '',

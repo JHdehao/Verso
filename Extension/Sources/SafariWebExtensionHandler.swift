@@ -4,12 +4,18 @@ import SafariServices
 /// 网页扩展 ⇄ 原生：后台脚本 browser.runtime.sendNativeMessage 发来的消息在这里处理。
 /// 每条消息唤醒一次扩展进程，网页侧已经合批，一次处理几十段。
 final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
+    /// 这个扩展进程处理过的消息数；为 0 说明进程刚被拉起（冷启动），自检用，不求线程安全
+    private static var served = 0
+
     func beginRequest(with context: NSExtensionContext) {
         let item = context.inputItems.first as? NSExtensionItem
         let message = item?.userInfo?[SFExtensionMessageKey] as? [String: Any] ?? [:]
         let request = NativeRequest(message)
+        let cold = Self.served == 0
+        Self.served += 1
         Task {
-            let reply = await request.handle()
+            var reply = await request.handle()
+            reply["cold"] = cold
             let response = NSExtensionItem()
             response.userInfo = [SFExtensionMessageKey: reply]
             context.completeRequest(returningItems: [response], completionHandler: nil)
@@ -64,10 +70,11 @@ enum NativeRequest: Sendable {
         switch self {
         case let .translate(units, target, fluent, hint):
             let start = Date()
-            let (results, missing) = await Translator.shared.translate(units, target: target, fluent: fluent, hint: hint)
+            let (results, missing, timing) = await Translator.shared.translate(units, target: target, fluent: fluent, hint: hint)
             return [
                 "ok": true,
                 "nms": Int(Date().timeIntervalSince(start) * 1000),
+                "timing": timing,
                 "missing": missing,
                 "results": results.map { result -> [String: Any] in
                     var out: [String: Any] = ["id": result.id]

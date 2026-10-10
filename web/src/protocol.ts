@@ -34,6 +34,10 @@ export type TranslateResponse = {
   ms?: number;
   /** 原生侧翻译本身的耗时；ms - nms ≈ 消息往返和唤醒扩展进程 */
   nms?: number;
+  /** 原生各步耗时：detect 语言识别 / avail 查语言包 / translate 会话 + 翻译 */
+  timing?: { detect?: number; avail?: number; translate?: number };
+  /** 扩展进程刚被拉起（这条是它处理的第一条消息） */
+  cold?: boolean;
   /** 其中来自缓存的段数 */
   hits?: number;
 };

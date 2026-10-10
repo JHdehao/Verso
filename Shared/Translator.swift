@@ -48,10 +48,14 @@ actor Translator {
     /// 已确认装好语言包的「源>目标>译法」：每批都查 LanguageAvailability 要几十到上百毫秒，装好了就不再查
     private var installed: Set<String> = []
 
-    func translate(_ units: [TextUnit], target: String, fluent: Bool, hint: String?) async -> (results: [UnitResult], missing: [String]) {
+    /// timing：各步耗时（ms），自检用来看冷启动的时间花在哪：detect 语言识别 / avail 查语言包 / translate 会话 + 翻译
+    func translate(_ units: [TextUnit], target: String, fluent: Bool, hint: String?) async -> (results: [UnitResult], missing: [String], timing: [String: Int]) {
         var results: [UnitResult] = []
         var missing: [String] = []
         var groups: [String: [TextUnit]] = [:]
+        var timing: [String: Int] = [:]
+        var mark = Date()
+        func lap(_ key: String) { timing[key, default: 0] += Int(Date().timeIntervalSince(mark) * 1000); mark = Date() }
         for unit in units {
             guard let source = Self.detect(unit.plain, hint: hint) else {
                 results.append(UnitResult(id: unit.id, skipped: true))
@@ -64,9 +68,11 @@ actor Translator {
             groups[source, default: []].append(unit)
         }
 
+        lap("detect")
         let targetLanguage = Locale.Language(identifier: target)
         let availability = LanguageAvailability(preferredStrategy: fluent ? .highFidelity : .lowLatency)
         for (source, group) in groups {
+            mark = Date()
             let sourceLanguage = Locale.Language(identifier: source)
             let pair = "\(source)>\(target)>\(fluent)"
             if !installed.contains(pair) {
@@ -82,10 +88,12 @@ actor Translator {
                     continue
                 }
             }
+            lap("avail")
             let session = session(source: sourceLanguage, target: targetLanguage, fluent: fluent)
             results += await translate(group, source: source, session: session)
+            lap("translate")
         }
-        return (results, missing)
+        return (results, missing, timing)
     }
 
     /// 自检：同一句带链接 / 行内代码的英文，分别走单句 translate(AttributedString)（苹果文档示例的用法）和批量接口，
@@ -159,6 +167,7 @@ actor Translator {
         let targetLanguage = Locale.Language(identifier: target)
         let availability = LanguageAvailability(preferredStrategy: fluent ? .highFidelity : .lowLatency)
         guard case .installed = await availability.status(from: sourceLanguage, to: targetLanguage) else { return }
+        installed.insert("\(source)>\(target)>\(fluent)")
         _ = try? await session(source: sourceLanguage, target: targetLanguage, fluent: fluent).translate("Hello")
     }
 
