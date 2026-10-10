@@ -11,8 +11,8 @@ export type TranslateRequest = {
   fluent: boolean;
   /** 页面声明或检测出的语言，短句识别不准时兜底 */
   hint?: string;
-  /** 跨页面缓存：rw = 读写，ro = 只读（隐私窗口），不带 = 关闭。只在 background 用，不进原生 */
-  cache?: 'rw' | 'ro';
+  /** 跨页面缓存：rw = 读写，ro = 只读（隐私窗口），wo = 只写（已经 lookup 过），不带 = 关闭。只在 background 用，不进原生 */
+  cache?: 'rw' | 'ro' | 'wo';
   units: UnitRequest[];
 };
 
@@ -35,6 +35,9 @@ export type TranslateResponse = {
   /** 其中来自缓存的段数 */
   hits?: number;
 };
+
+/** 只查缓存（background 处理，不进原生），回复里 results 只含命中的 */
+export type LookupRequest = Omit<TranslateRequest, 'op'> & { op: 'lookup' };
 
 export type DetectRequest = { op: 'detect'; text: string };
 export type DetectResponse = { ok: boolean; lang?: string; error?: string };
@@ -67,5 +70,9 @@ export type TabState = {
   /** done 里来自缓存的段数（页内 + 跨页面） */
   cached: number;
   failed: number;
+  /** 端到端耗时（ms）：开始翻译到第一段回填；查缓存、翻译的平均往返 */
+  first?: number;
+  lookupMs?: number;
+  translateMs?: number;
   missing: string[];
 };

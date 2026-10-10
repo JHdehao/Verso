@@ -1,11 +1,13 @@
 // 页面里的调度：判断要不要翻 → 切段 → 只翻看得见的 → 回填 → 跟着页面变化继续翻
 import { apply, boxOf, cacheKey, forget, inlineOnly, owner, restore, scan, serialize, type Unit } from './dom';
-import type { Rules, Run, TabCommand, TabState, TranslateRequest, TranslateResponse, UnitRequest } from './protocol';
+import type { LookupRequest, Rules, Run, TabCommand, TabState, TranslateRequest, TranslateResponse, UnitRequest } from './protocol';
 import { api, baseLang, loadRules, siteKey, wants } from './rules';
 
 const BATCH_UNITS = 40;
 const BATCH_CHARS = 5000;
 const MAX_INFLIGHT = 2;
+/** 只查缓存的一批可以大得多：不过原生，只是一次 IndexedDB 读 */
+const LOOKUP_UNITS = 300;
 const TAB_KEY = 'verso:tab';
 
 let rules: Rules;
@@ -14,11 +16,18 @@ let active = false;
 let failed = 0;
 let done = 0;
 let cached = 0;
+let started = 0;
+let first: number | undefined;
+/** [总耗时, 次数] */
+const lat = { lookup: [0, 0], translate: [0, 0] };
 const missing = new Set<string>();
 
 const units = new Map<string, Unit>();
 const byBox = new Map<Element, Set<Unit>>();
 const queue = new Set<Unit>();
+/** 等着先查缓存的单元 */
+const probe = new Set<Unit>();
+let probeTimer: ReturnType<typeof setTimeout> | undefined;
 const cache = new Map<string, Run[]>();
 /** 发出去过的单元不再重发（跳过 / 失败的要靠重新开关或页面变化后重新切段） */
 const sent = new WeakSet<Unit>();
@@ -58,17 +67,61 @@ function register(found: Unit[]) {
 function drop(u: Unit) {
   units.delete(u.id);
   queue.delete(u);
+  probe.delete(u);
   forget(u);
   for (const [box, set] of byBox) if (set.delete(u) && !set.size) { byBox.delete(box); io?.unobserve(box); }
 }
 
+/** rw 读写；隐私窗口只读；设置里关掉就不碰缓存 */
+const cacheMode = (): 'rw' | 'ro' | undefined =>
+  !rules.settings.cache ? undefined : api.extension?.inIncognitoContext ? 'ro' : 'rw';
+
+const request = (units: UnitRequest[]) =>
+  ({ target: rules.settings.target, fluent: rules.settings.fluent, hint: pageLang, units });
+
+function remember(key: string, runs: Run[]) {
+  cache.set(key, runs);
+  if (cache.size > 3000) cache.delete(cache.keys().next().value!);
+}
+
+function fill(u: Unit, runs: Run[], hit: boolean) {
+  mute(() => apply(u, runs));
+  done++;
+  if (hit) cached++;
+  first ??= Math.round(performance.now() - started);
+}
+
+const timed = (k: keyof typeof lat, t0: number) => { lat[k][0] += performance.now() - t0; lat[k][1]++; };
+const avg = (k: keyof typeof lat) => (lat[k][1] ? Math.round(lat[k][0] / lat[k][1]) : undefined);
+
 function enqueue(u: Unit) {
   if (u.applied || sent.has(u) || !units.has(u.id)) return;
-  const key = cacheKey(serialize(u));
-  const hit = cache.get(key);
-  if (hit) { mute(() => apply(u, hit)); done++; cached++; return; }
+  const hit = cache.get(cacheKey(serialize(u)));
+  if (hit) return fill(u, hit, true);
+  if (cacheMode()) { probe.add(u); probeTimer ??= setTimeout(lookup, 10); return; }
   queue.add(u);
   timer ??= setTimeout(pump, 30);
+}
+
+/** 先只查缓存：命中的马上回填，不陪没命中的段落等原生翻译；没命中的再进翻译队列 */
+async function lookup() {
+  probeTimer = undefined;
+  const batch = [...probe].slice(0, LOOKUP_UNITS).map(u => ({ unit: u, req: { id: u.id, runs: serialize(u) } }));
+  for (const b of batch) { probe.delete(b.unit); sent.add(b.unit); }
+  if (probe.size) probeTimer = setTimeout(lookup, 0);
+  const t0 = performance.now();
+  const msg: LookupRequest = { op: 'lookup', cache: cacheMode(), ...request(batch.map(b => b.req)) };
+  const res: TranslateResponse = await api.runtime.sendMessage(msg).catch(() => ({ ok: false }));
+  if (!active) return;
+  timed('lookup', t0);
+  const hits = new Map((res.results ?? []).map(r => [r.id, r]));
+  for (const { unit, req } of batch) {
+    if (!units.has(unit.id)) continue;
+    const r = hits.get(unit.id);
+    if (r?.runs) { remember(cacheKey(req.runs), r.runs); fill(unit, r.runs, true); }
+    else if (!r) queue.add(unit); // 命中的「已是目标语言」什么都不用做
+  }
+  if (queue.size) timer ??= setTimeout(pump, 0);
 }
 
 function pump() {
@@ -91,14 +144,9 @@ function pump() {
 
 async function send(batch: { unit: Unit; req: UnitRequest; key: string }[]) {
   inflight++;
-  const msg: TranslateRequest = {
-    op: 'translate',
-    target: rules.settings.target,
-    fluent: rules.settings.fluent,
-    hint: pageLang,
-    cache: rules.settings.cache ? (api.extension?.inIncognitoContext ? 'ro' : 'rw') : undefined,
-    units: batch.map(b => b.req),
-  };
+  // 已经 lookup 过，background 只管写回；隐私窗口不写
+  const msg: TranslateRequest = { op: 'translate', cache: cacheMode() === 'rw' ? 'wo' : undefined, ...request(batch.map(b => b.req)) };
+  const t0 = performance.now();
   let res: TranslateResponse;
   try {
     res = await api.runtime.sendMessage(msg);
@@ -107,18 +155,16 @@ async function send(batch: { unit: Unit; req: UnitRequest; key: string }[]) {
   }
   inflight--;
   if (!active) return;
+  timed('translate', t0);
   for (const m of res.missing ?? []) missing.add(m);
-  cached += res.hits ?? 0;
   const byId = new Map(batch.map(b => [b.req.id, b]));
   for (const r of res.results ?? []) {
     const b = byId.get(r.id);
     byId.delete(r.id);
     if (!b || !units.has(r.id)) continue;
     if (r.runs) {
-      cache.set(b.key, r.runs);
-      if (cache.size > 3000) cache.delete(cache.keys().next().value!);
-      mute(() => apply(b.unit, r.runs!));
-      done++;
+      remember(b.key, r.runs);
+      fill(b.unit, r.runs, false);
     } else if (r.err) failed++;
   }
   if (!res.ok) failed += byId.size;
@@ -163,6 +209,10 @@ function start() {
   if (active || !document.body) return;
   active = true;
   failed = done = cached = 0;
+  started = performance.now();
+  first = undefined;
+  lat.lookup = [0, 0];
+  lat.translate = [0, 0];
   missing.clear();
   io = new IntersectionObserver(entries => {
     for (const e of entries) if (e.isIntersecting) for (const u of byBox.get(e.target) ?? []) enqueue(u);
@@ -181,8 +231,10 @@ function stop() {
   io = mo = undefined;
   clearTimeout(timer);
   clearTimeout(dirtyTimer);
-  timer = dirtyTimer = undefined;
+  clearTimeout(probeTimer);
+  timer = dirtyTimer = probeTimer = undefined;
   queue.clear();
+  probe.clear();
   dirty.clear();
   for (const u of units.values()) { restore(u); forget(u); }
   units.clear();
@@ -191,7 +243,8 @@ function stop() {
 }
 
 function state(): TabState {
-  return { host: siteKey(location.hostname), lang: pageLang, active, units: units.size, done, cached, failed, missing: [...missing] };
+  return { host: siteKey(location.hostname), lang: pageLang, active, units: units.size, done, cached, failed, missing: [...missing],
+    first, lookupMs: avg('lookup'), translateMs: avg('translate') };
 }
 
 /** 页面语言：先信 <html lang>，没写就取一段正文问原生侧 */

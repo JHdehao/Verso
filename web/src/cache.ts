@@ -21,7 +21,7 @@ export interface Store {
 
 export const today = () => Math.floor(Date.now() / 864e5);
 
-export async function keyOf(msg: TranslateRequest, runs: Run[]) {
+export async function keyOf(msg: Pick<TranslateRequest, 'target' | 'fluent' | 'hint'>, runs: Run[]) {
   const raw = [CACHE_V, msg.target, msg.fluent ? 1 : 0, msg.hint ?? '', cacheKey(runs)].join('\u0002');
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw)));
   return Array.from(hash.subarray(0, 16), b => b.toString(16).padStart(2, '0')).join('');
@@ -34,15 +34,13 @@ export function toEntry(r: UnitResult, day: number): Entry | undefined {
   if (r.skip && r.src) return { r: null, src: r.src, d: day, n: 100 };
 }
 
-/** 命中的直接出结果，没命中的交给 native；save 留给回复之后再跑，不挡回填 */
-export async function translateCached(
-  msg: TranslateRequest,
-  store: Store,
-  native: (m: TranslateRequest) => Promise<TranslateResponse>,
-): Promise<{ res: TranslateResponse; save: () => Promise<void> }> {
+type Req = Pick<TranslateRequest, 'target' | 'fluent' | 'hint' | 'cache' | 'units'>;
+
+/** 只查缓存。rw 命中会顺带刷新使用日期（touch，回复之后再跑）；wo 不读，只算键给后面写入用 */
+export async function lookup(msg: Req, store: Store) {
   const day = today();
   const keys = await Promise.all(msg.units.map(u => keyOf(msg, u.runs)));
-  const found = await store.get(keys).catch(() => []);
+  const found = msg.cache === 'rw' || msg.cache === 'ro' ? await store.get(keys).catch(() => []) : [];
   const hits: UnitResult[] = [];
   const miss: UnitRequest[] = [];
   const missKey = new Map<string, string>();
@@ -53,19 +51,34 @@ export async function translateCached(
     hits.push(e.r ? { id: u.id, runs: e.r, src: e.src } : { id: u.id, src: e.src, skip: 1 });
     if (e.d !== day) stale.push(keys[i]);
   });
+  const touch = msg.cache === 'rw' ? stale : [];
+  return {
+    day, hits, miss, missKey,
+    res: { ok: true, results: hits, hits: hits.filter(h => h.runs).length } as TranslateResponse,
+    touch: () => (touch.length ? store.write([], touch, day) : Promise.resolve()),
+  };
+}
+
+/** 命中的直接出结果，没命中的交给 native；save 留给回复之后再跑，不挡回填 */
+export async function translateCached(
+  msg: TranslateRequest,
+  store: Store,
+  native: (m: TranslateRequest) => Promise<TranslateResponse>,
+): Promise<{ res: TranslateResponse; save: () => Promise<void> }> {
+  const { day, hits, miss, missKey, res: cached, touch } = await lookup(msg, store);
   const res: TranslateResponse = miss.length ? await native({ ...msg, units: miss }) : { ok: true };
   // 隐私窗口（ro）只读：不写新条目，也不更新使用时间
-  const rw = msg.cache === 'rw';
+  const write = msg.cache === 'rw' || msg.cache === 'wo';
   // 同一批里重复的段落键相同，按键去重，免得字节数重复计
   const fresh = new Map<string, Entry>();
-  if (rw) for (const r of res.results ?? []) {
+  if (write) for (const r of res.results ?? []) {
     const k = missKey.get(r.id);
     const e = k ? toEntry(r, day) : undefined;
     if (k && e) fresh.set(k, e);
   }
   return {
-    res: { ...res, results: [...hits, ...(res.results ?? [])], hits: hits.filter(h => h.runs).length },
-    save: () => (fresh.size || (rw && stale.length) ? store.write([...fresh], rw ? stale : [], day) : Promise.resolve()),
+    res: { ...res, results: [...hits, ...(res.results ?? [])], hits: cached.hits },
+    save: async () => { await touch(); if (fresh.size) await store.write([...fresh], [], day); },
   };
 }
 
@@ -88,6 +101,9 @@ function open() {
     r.onerror = () => { conn = undefined; no(r.error); };
   });
 }
+
+/** background 一醒就开库，和内容脚本切段并行，第一批查询不用再等开库 */
+export const warm = () => { open().catch(() => {}); };
 
 let evicting = false;
 /** 按使用日期从旧到新删，每个事务最多删 2000 条，iOS 中途杀进程也不会白干 */

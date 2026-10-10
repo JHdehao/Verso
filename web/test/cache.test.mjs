@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { keyOf, today, toEntry, translateCached } from '../src/cache.ts';
+import { keyOf, lookup, today, toEntry, translateCached } from '../src/cache.ts';
 
 /** 内存版存储，只测拆分 / 合并 / 写入逻辑；IndexedDB 适配层靠真机自检 */
 function memStore() {
@@ -73,4 +73,19 @@ test('缓存：同批重复段落只存一条；命中旧条目会刷新使用�
   await (await translateCached(req([unit('c', 'Hi')]), store, nat.fn)).save();
   assert.equal(store.map.get(k).d, today());
   assert.equal(toEntry({ id: 'x', skip: 1 }, 0), undefined);
+});
+
+test('缓存：lookup 只回命中的；wo 不读只写，供 lookup 之后的翻译用', async () => {
+  const store = memStore(), nat = fakeNative();
+  await (await translateCached(req([unit('a', 'Hello')]), store, nat.fn)).save();
+  const r = await lookup(req([unit('a', 'Hello'), unit('b', 'World')]), store);
+  assert.deepEqual(r.res.results.map(x => x.id), ['a']);
+  assert.equal(r.res.hits, 1);
+  assert.deepEqual(r.miss.map(u => u.id), ['b']);
+
+  const run = await translateCached(req([unit('a', 'Hello'), unit('b', 'World')], 'wo'), store, nat.fn);
+  assert.equal(run.res.hits, 0);
+  assert.deepEqual(nat.calls.at(-1), ['a', 'b']);
+  await run.save();
+  assert.equal(store.map.size, 2);
 });

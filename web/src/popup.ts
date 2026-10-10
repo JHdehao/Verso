@@ -78,6 +78,7 @@ async function selftest() {
     r?.err ? `单元错误: ${r.err}` : '',
     res.missing?.length ? `缺语言包: ${res.missing.join(', ')}` : '',
     res.error ? `错误: ${res.error}` : '',
+    tab?.active ? `本页：首段 ${tab.first ?? '-'} ms，查缓存往返 ${tab.lookupMs ?? '-'} ms，翻译往返 ${tab.translateMs ?? '-'} ms` : '',
   ].filter(Boolean).join('\n');
 }
 

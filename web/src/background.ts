@@ -1,6 +1,6 @@
 // 中转 + 跨页面缓存：内容脚本和弹窗不能直接跟原生扩展进程说话
-import { idbStore, translateCached } from './cache';
-import type { TranslateRequest, TranslateResponse } from './protocol';
+import { idbStore, lookup, translateCached, warm } from './cache';
+import type { LookupRequest, TranslateRequest, TranslateResponse } from './protocol';
 import { api } from './rules';
 
 const native = (msg: unknown): Promise<TranslateResponse> =>
@@ -22,6 +22,14 @@ async function translate(msg: TranslateRequest): Promise<TranslateResponse> {
   return run.res;
 }
 
+async function lookupOnly(msg: LookupRequest): Promise<TranslateResponse> {
+  const r = await lookup(msg, idbStore);
+  setTimeout(() => r.touch().catch(() => {}));
+  return r.res;
+}
+
+warm();
+
 const reply = (p: Promise<unknown>, sendResponse: (r: unknown) => void) => {
   p.then(sendResponse, (e: any) => sendResponse({ ok: false, error: String(e?.message ?? e) }));
   return true;
@@ -37,7 +45,7 @@ api.runtime.onMessage.addListener((msg: any, sender: any, sendResponse: (r: unkn
   if (msg?.bg === 'cache-clear') return reply(idbStore.clear().then(() => ({ ok: true })), sendResponse);
   if (!msg?.op) return;
   const t0 = Date.now();
-  const p = msg.op === 'translate' ? translate(msg) : native(msg);
+  const p = msg.op === 'translate' ? translate(msg) : msg.op === 'lookup' ? lookupOnly(msg) : native(msg);
   return reply(p.then(r => ({ ms: Date.now() - t0, ...r })), sendResponse);
 });
 
