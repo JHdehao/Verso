@@ -1,5 +1,5 @@
 // 页面里的调度：判断要不要翻 → 切段 → 只翻看得见的 → 回填 → 跟着页面变化继续翻
-import { apply, boxOf, cacheKey, forget, inlineOnly, owner, restore, scan, serialize, type Unit } from './dom';
+import { apply, boxOf, cacheKey, forget, inlineOnly, owner, restore, scan, scanOptions, serialize, spaced, type Unit } from './dom';
 import type { LookupRequest, Rules, Run, TabCommand, TabState, TranslateRequest, TranslateResponse, UnitRequest } from './protocol';
 import { api, baseLang, loadRules, siteKey, wants } from './rules';
 
@@ -119,7 +119,8 @@ function remember(key: string, runs: Run[]) {
 }
 
 function fill(u: Unit, runs: Run[], hit: boolean) {
-  mute(() => apply(u, runs));
+  const pad = rules.settings.spacing && /^(zh|ja)/.test(rules.settings.target);
+  mute(() => apply(u, pad ? spaced(u, runs) : runs));
   done++;
   if (hit) cached++;
   first ??= Math.round(performance.now());
@@ -286,6 +287,7 @@ function start() {
   if (active || !document.body) return;
   active = true;
   failed = done = cached = 0;
+  scanOptions.bodyOnly = rules.settings.bodyOnly;
   first = undefined;
   startAt = Math.round(performance.now());
   hint = pageLang;
@@ -409,7 +411,9 @@ async function main() {
     rules = await loadRules();
     // 改了站点 / 语言规则就以规则为准，清掉这个标签页的手动选择
     if ('sites' in changes || 'langs' in changes) setTabChoice(null);
-    reevaluate('settings' in changes && (before.target !== rules.settings.target || before.fluent !== rules.settings.fluent));
+    // 这几项变了要重新切段 / 回填
+    const redo = (['target', 'fluent', 'bodyOnly', 'spacing'] as const).some(k => before[k] !== rules.settings[k]);
+    reevaluate('settings' in changes && redo);
   });
 
   // 没声明语言：等正文解析完再识别（提前定下来的页面也补上，弹窗「总是翻译某语言」要用）

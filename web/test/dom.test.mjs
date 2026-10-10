@@ -170,3 +170,44 @@ test('切段：按钮和 role=button 各成一段，不和旁边的按钮、提�
   const body = page(`<div><button><span>Code</span></button><a role="button" href="#">More options</a><span>Sign in</span></div>`);
   assert.deepEqual(scan(body).map(text), ['Code', 'More options', 'Sign in']);
 });
+
+test('只翻正文：跳过导航、按钮、单个词、短链接，保留正文、标题和长链接标题', async () => {
+  const { scanOptions } = await import('../src/dom.ts');
+  scanOptions.bodyOnly = true;
+  try {
+    const body = page(`
+      <nav><a href="#">Code</a> <a href="#">Pull requests</a></nav>
+      <div><button><span>Watch</span> <span>1172</span></button></div>
+      <h2>About</h2>
+      <p>Ghidra is a Software Reverse Engineering (SRE) Framework</p>
+      <ul><li><a href="#">Readme</a></li><li><a href="#">Code of conduct</a></li></ul>
+      <span>Public</span>
+      <div><a href="#">Show HN: A faster way to build apps</a></div>`);
+    assert.deepEqual(scan(body).map(text), ['About', 'Ghidra is a Software Reverse Engineering (SRE) Framework', 'Show HN: A faster way to build apps']);
+  } finally {
+    scanOptions.bodyOnly = false;
+  }
+});
+
+test('中英文间加空格：段内和跨槽都加，跨到行内代码时空格放在代码外面', async () => {
+  const { spaced } = await import('../src/dom.ts');
+  const body = page(`<p>Run <code>npm</code> now, Apache license</p>`);
+  const [u] = scan(body);
+  const [head, code, tail] = serialize(u).map(r => r.s);
+  assert.deepEqual(spaced(u, [{ t: '运行', s: head }, { t: 'npm', s: code }, { t: '现在，Apache许可证', s: tail }]),
+    [{ t: '运行 ', s: head }, { t: 'npm', s: code }, { t: ' 现在，Apache 许可证', s: tail }]);
+});
+
+test('首尾图标固定：下拉箭头被译文插到词中间时挪回段尾', async () => {
+  const { pinEdges } = await import('../src/dom.ts');
+  const sent = [{ t: '￼', s: 0, k: 1 }, { t: 'Code', s: 1 }, { t: '￼', s: 2, k: 1 }];
+  assert.deepEqual(pinEdges(sent, [{ t: '代', s: 1 }, { t: '', s: 2 }, { t: '码', s: 1 }, { t: '', s: 0 }]),
+    [{ t: '', s: 0 }, { t: '代', s: 1 }, { t: '码', s: 1 }, { t: '', s: 2 }]);
+});
+
+test('锚定：译文里原样保留的名字被切掉尾巴时还回来', async () => {
+  const { anchorAtoms } = await import('../src/dom.ts');
+  assert.deepEqual(
+    anchorAtoms([{ t: 'ryanmkurtz', s: 0 }, { t: ' ', s: 1 }, { t: '2 days ago', s: 2 }], [{ t: 'ryanmkurt', s: 0 }, { t: 'z 2天前', s: 2 }]),
+    [{ t: 'ryanmkurtz', s: 0 }, { t: ' 2天前', s: 2 }]);
+});

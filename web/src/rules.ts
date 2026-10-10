@@ -19,7 +19,7 @@ export const siteKey = (host: string) => host.replace(/^www\./, '');
 export async function loadRules(): Promise<Rules> {
   const r = await api.storage.local.get(['settings', 'sites', 'langs']);
   return {
-    settings: { target: defaultTarget(), fluent: true, auto: true, cache: true, cover: true, ...r.settings },
+    settings: { target: defaultTarget(), fluent: true, auto: true, cache: true, cover: true, bodyOnly: true, spacing: true, ...r.settings },
     sites: r.sites ?? {},
     langs: r.langs ?? [],
   };

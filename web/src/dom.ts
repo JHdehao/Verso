@@ -52,7 +52,41 @@ const SLUG = /^[a-z0-9]+(?:[-_./][a-z0-9]+)+$/;
 const COUNT = /\d[\d.,]*\s?(?:[kKmMbB]|万|亿)?(?![\p{L}])/gu;
 const countish = (t: string) => !LETTER.test(t.replace(COUNT, ''));
 
+/** 切段选项：bodyOnly = 只翻正文（跳过按钮、导航、单个词、短链接），由内容脚本按设置写入；测试里默认关 */
+export const scanOptions = { bodyOnly: false };
+
+/** 界面控件和导航：里面的文字是 UI，不是正文 */
+const UI = [
+  'button', 'summary', 'select', 'label', 'nav', '[aria-hidden="true"]',
+  ...['button', 'tab', 'menuitem', 'option', 'switch', 'checkbox', 'radio', 'navigation', 'menu', 'menubar', 'tablist', 'toolbar']
+    .map(r => `[role="${r}"]`),
+].join(',');
+const CJK = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}]/gu;
+/** 词数：空格分词的语言数词，中日韩按两个字算一个词 */
+function wordCount(t: string) {
+  const cjk = t.match(CJK)?.length ?? 0;
+  return Math.ceil(cjk / 2) + (t.replace(CJK, ' ').match(/\p{L}[\p{L}\p{N}'’-]*/gu)?.length ?? 0);
+}
+/** 只翻正文时跳过：控件 / 导航里的、单个词的（标题除外）、不超过 3 个词的单独链接 */
+function looksLikeUI(parent: ParentNode & Node, nodes: ChildNode[], text: string) {
+  const el = parent.nodeType === 11 ? (parent as ShadowRoot).host : (parent as Element);
+  if (!el?.closest) return false;
+  if (el.closest(UI)) return true;
+  const n = wordCount(text);
+  if (n <= 1 && !/^h[1-6]$/.test(el.localName)) return true;
+  const lone = nodes.length === 1 && nodes[0].nodeType === 1 && (nodes[0] as Element).localName === 'a';
+  return n <= 3 && (lone || !!el.closest('a'));
+}
+
 let hiddenMemo = new WeakMap<Element, boolean>();
+let renderedMemo = new WeakMap<Element, boolean>();
+/** 有没有布局盒子（display:none 的没有）；jsdom 里都没有，不会触发混排判断 */
+function rendered(el: Element | null): boolean {
+  if (!el) return true;
+  let v = renderedMemo.get(el);
+  if (v === undefined) { v = el.getClientRects().length > 0; renderedMemo.set(el, v); }
+  return v;
+}
 /** 有布局但 ≤1px：sr-only 一类只给读屏用的文字。没有布局（display:none、jsdom）不算 */
 function visuallyHidden(el: Element): boolean {
   let v = hiddenMemo.get(el);
@@ -104,6 +138,7 @@ let seq = 0;
 export function scan(root: Node): Unit[] {
   inlineMemo = new WeakMap();
   hiddenMemo = new WeakMap();
+  renderedMemo = new WeakMap();
   const out: Unit[] = [];
   if (root.nodeType === 1 && skipContainer(root as Element)) return out;
   if (root.nodeType === 1 && hasSkippedAncestor(root as Element)) return out;
@@ -161,8 +196,17 @@ function flush(parent: ParentNode & Node, run: ChildNode[], out: Unit[]) {
     for (const c of Array.from(el.childNodes)) collect(c, next);
   };
   for (const n of nodes) collect(n, []);
+  // 同一段里一部分文字不渲染（display:none，常见于移动端藏起来的长标签）、一部分渲染：不渲染的原样保留，免得译文分一半进看不见的节点。
+  // 整段都不渲染（折叠菜单）就照常翻
+  const host = parent.nodeType === 1 ? (parent as Element) : null;
+  const shown = slots.map(s => s.atom || rendered(s.chain[s.chain.length - 1] ?? host));
+  if (shown.some(x => !x) && slots.some((s, i) => shown[i] && !s.atom && LETTER.test((s.node as Text).data))) {
+    slots.forEach((s, i) => { if (!shown[i]) s.hidden = true; });
+  }
   if (!slots.some(s => !s.atom && !s.hidden && LETTER.test((s.node as Text).data))) return;
-  if (SLUG.test(slots.filter(s => !s.atom).map(s => (s.node as Text).data).join('').trim())) return;
+  const plainText = slots.filter(s => !s.atom).map(s => (s.node as Text).data).join('').trim();
+  if (SLUG.test(plainText)) return;
+  if (scanOptions.bodyOnly && looksLikeUI(parent, nodes, plainText)) return;
   if (slots.some(s => owner.has(s.node))) return;
   const unit: Unit = { id: `u${++seq}`, parent, nodes, slots };
   for (const s of slots) owner.set(s.node, unit);
@@ -224,8 +268,10 @@ export function anchorAtoms(sent: Run[], got: Run[]): Run[] {
   /** 把 [from, to) 里标成 s 的字符改标成 fill */
   const give = (from: number, to: number, s: number, fill: number) => { for (let i = from; i < to; i++) if (labels[i] === s) labels[i] = fill; };
   for (const r of sent) {
-    const text = r.k || countish(r.t) ? r.t.trim() : '';
-    if (!text) continue;
+    // 不翻译 / 计数器槽必锚定；普通槽只有译文里原样出现原文（没翻的名字，如用户名）且和它现有字符重叠时才锚定
+    const fixed = !!r.k || countish(r.t);
+    const text = r.t.trim();
+    if (!text || (!fixed && text.length < 2)) continue;
     // 同样的文字出现多处时，选和这个槽现有字符重叠最多的那处
     let best = -1, overlap = -1;
     for (let p = full.indexOf(text); p >= 0; p = full.indexOf(text, p + 1)) {
@@ -233,7 +279,7 @@ export function anchorAtoms(sent: Run[], got: Run[]): Run[] {
       for (let i = p; i < p + text.length; i++) if (labels[i] === r.s) hit++;
       if (hit > overlap) { best = p; overlap = hit; }
     }
-    if (best < 0) continue;
+    if (best < 0 || (!fixed && overlap <= 0)) continue;
     const end = best + text.length;
     let left = best;
     while (left > 0 && labels[left - 1] === r.s) left--;
@@ -260,9 +306,53 @@ export function anchorAtoms(sent: Run[], got: Run[]): Run[] {
   return out;
 }
 
+const CJK_CHAR = /[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}]/u;
+const LATIN = /[A-Za-z0-9]/;
+const PAD = [
+  [/([\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}])([A-Za-z0-9])/gu, '$1 $2'],
+  [/([A-Za-z0-9])([\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}])/gu, '$1 $2'],
+] as const;
+
+/**
+ * 中日文译文里，汉字 / 假名和英文、数字之间加空格（「Apache-2.0 许可证」）。
+ * 原子槽（行内代码）的文字回填时用不上，跨槽的空格放到非原子那一侧。
+ */
+export function spaced(unit: Unit, runs: Run[]): Run[] {
+  const atom = (r: Run) => !!unit.slots[r.s]?.atom;
+  const out = runs.map(r => ({ ...r, t: atom(r) ? r.t : PAD.reduce((t, [re, to]) => t.replace(re, to), r.t) }));
+  for (let i = 1; i < out.length; i++) {
+    const a = out[i - 1], b = out[i];
+    const x = a.t.slice(-1), y = b.t.slice(0, 1);
+    if (!((CJK_CHAR.test(x) && LATIN.test(y)) || (LATIN.test(x) && CJK_CHAR.test(y)))) continue;
+    if (atom(b)) a.t += ' ';
+    else b.t = ' ' + b.t;
+  }
+  return out;
+}
+
+/**
+ * 段首 / 段尾的图标类原子（svg、img 这类没有文字的）在译文里的位置不可靠（真机见过下拉箭头插进「代 ▾ 码」中间、
+ * 眼睛图标跑到按钮末尾）：固定回段首 / 段尾。中间的照译文位置放
+ */
+export function pinEdges(sent: Run[], got: Run[]): Run[] {
+  const icon = (r: Run) => !!r.k && !LETTER.test(r.t);
+  const blank = (r: Run) => !r.k && !r.t.trim();
+  const lead: number[] = [], tail: number[] = [];
+  for (const r of sent) { if (icon(r)) lead.push(r.s); else if (!blank(r)) break; }
+  for (let i = sent.length - 1; i >= 0; i--) {
+    const r = sent[i];
+    if (icon(r) && !lead.includes(r.s)) tail.unshift(r.s);
+    else if (!blank(r)) break;
+  }
+  if (!lead.length && !tail.length) return got;
+  const pinned = new Set([...lead, ...tail]);
+  return [...lead.map(s => ({ t: '', s })), ...got.filter(r => !pinned.has(r.s)), ...tail.map(s => ({ t: '', s }))];
+}
+
 export function apply(unit: Unit, runs: Run[]): 'inplace' | 'rebuild' {
   restore(unit);
-  const merged = merge(unit, anchorAtoms(serialize(unit), runs));
+  const sent = serialize(unit);
+  const merged = merge(unit, pinEdges(sent, anchorAtoms(sent, runs)));
   if (merged.every(r => r.s < 0)) { plain(unit, merged.map(r => r.t).join('')); return 'inplace'; }
   if (inPlace(unit, merged)) return 'inplace';
   rebuild(unit, merged);

@@ -23,11 +23,13 @@ async function refresh() {
 }
 
 function render() {
-  const { target, fluent, auto, cache, cover } = rules.settings;
+  const { target, fluent, auto, cache, cover, bodyOnly, spacing } = rules.settings;
   $<HTMLSelectElement>('target').value = target;
   $<HTMLInputElement>('auto').checked = auto;
   $<HTMLInputElement>('cache').checked = cache;
   $<HTMLInputElement>('cover').checked = cover;
+  $<HTMLInputElement>('bodyOnly').checked = bodyOnly;
+  $<HTMLInputElement>('spacing').checked = spacing;
   $<HTMLSelectElement>('fluent').value = fluent ? '1' : '0';
   $('page').hidden = !tab;
   $('unavailable').hidden = !!tab;
@@ -128,6 +130,9 @@ async function main() {
     save({ settings: { ...rules.settings, auto: (e.target as HTMLInputElement).checked } });
   $<HTMLInputElement>('cache').onchange = e =>
     save({ settings: { ...rules.settings, cache: (e.target as HTMLInputElement).checked } });
+  for (const key of ['bodyOnly', 'spacing'] as const) {
+    $<HTMLInputElement>(key).onchange = e => save({ settings: { ...rules.settings, [key]: (e.target as HTMLInputElement).checked } });
+  }
   $<HTMLInputElement>('cover').onchange = e =>
     save({ settings: { ...rules.settings, cover: (e.target as HTMLInputElement).checked } });
   $('cacheClear').onclick = async () => {

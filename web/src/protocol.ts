@@ -61,8 +61,11 @@ export type CapabilitiesResponse = { ok: boolean; fluent?: boolean; reason?: str
 
 export type NativeRequest = TranslateRequest | WarmRequest | DetectRequest | DiagRequest | CapabilitiesRequest;
 
-/** auto = 按站点 / 语言规则自动翻译（关掉后只能手动翻译此页）；cache = 跨页面缓存译文；cover = 防闪烁（第一屏译好前先隐藏页面） */
-export type Settings = { target: string; fluent: boolean; auto: boolean; cache: boolean; cover: boolean };
+/**
+ * auto = 按站点 / 语言规则自动翻译（关掉后只能手动翻译此页）；cache = 跨页面缓存译文；cover = 防闪烁（第一屏译好前先隐藏页面）；
+ * bodyOnly = 只翻正文（跳过按钮、导航、单个词、短链接）；spacing = 中日文译文里汉字和英文数字之间加空格
+ */
+export type Settings = { target: string; fluent: boolean; auto: boolean; cache: boolean; cover: boolean; bodyOnly: boolean; spacing: boolean };
 export type SiteRule = 'always' | 'never';
 export type Rules = {
   settings: Settings;
