@@ -11,6 +11,8 @@ export type TranslateRequest = {
   fluent: boolean;
   /** 页面声明或检测出的语言，短句识别不准时兜底 */
   hint?: string;
+  /** 跨页面缓存：rw = 读写，ro = 只读（隐私窗口），不带 = 关闭。只在 background 用，不进原生 */
+  cache?: 'rw' | 'ro';
   units: UnitRequest[];
 };
 
@@ -30,6 +32,8 @@ export type TranslateResponse = {
   missing?: string[];
   error?: string;
   ms?: number;
+  /** 其中来自缓存的段数 */
+  hits?: number;
 };
 
 export type DetectRequest = { op: 'detect'; text: string };
@@ -41,7 +45,8 @@ export type CapabilitiesResponse = { ok: boolean; fluent?: boolean; reason?: str
 
 export type NativeRequest = TranslateRequest | DetectRequest | CapabilitiesRequest;
 
-export type Settings = { target: string; fluent: boolean };
+/** auto = 按站点 / 语言规则自动翻译（关掉后只能手动翻译此页）；cache = 跨页面缓存译文 */
+export type Settings = { target: string; fluent: boolean; auto: boolean; cache: boolean };
 export type SiteRule = 'always' | 'never';
 export type Rules = {
   settings: Settings;
@@ -59,6 +64,8 @@ export type TabState = {
   active: boolean;
   units: number;
   done: number;
+  /** done 里来自缓存的段数（页内 + 跨页面） */
+  cached: number;
   failed: number;
   missing: string[];
 };

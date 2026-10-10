@@ -13,6 +13,7 @@ let pageLang: string | undefined;
 let active = false;
 let failed = 0;
 let done = 0;
+let cached = 0;
 const missing = new Set<string>();
 
 const units = new Map<string, Unit>();
@@ -65,7 +66,7 @@ function enqueue(u: Unit) {
   if (u.applied || sent.has(u) || !units.has(u.id)) return;
   const key = cacheKey(serialize(u));
   const hit = cache.get(key);
-  if (hit) { mute(() => apply(u, hit)); done++; return; }
+  if (hit) { mute(() => apply(u, hit)); done++; cached++; return; }
   queue.add(u);
   timer ??= setTimeout(pump, 30);
 }
@@ -95,6 +96,7 @@ async function send(batch: { unit: Unit; req: UnitRequest; key: string }[]) {
     target: rules.settings.target,
     fluent: rules.settings.fluent,
     hint: pageLang,
+    cache: rules.settings.cache ? (api.extension?.inIncognitoContext ? 'ro' : 'rw') : undefined,
     units: batch.map(b => b.req),
   };
   let res: TranslateResponse;
@@ -106,6 +108,7 @@ async function send(batch: { unit: Unit; req: UnitRequest; key: string }[]) {
   inflight--;
   if (!active) return;
   for (const m of res.missing ?? []) missing.add(m);
+  cached += res.hits ?? 0;
   const byId = new Map(batch.map(b => [b.req.id, b]));
   for (const r of res.results ?? []) {
     const b = byId.get(r.id);
@@ -159,7 +162,7 @@ function onMutations(records: MutationRecord[]) {
 function start() {
   if (active || !document.body) return;
   active = true;
-  failed = done = 0;
+  failed = done = cached = 0;
   missing.clear();
   io = new IntersectionObserver(entries => {
     for (const e of entries) if (e.isIntersecting) for (const u of byBox.get(e.target) ?? []) enqueue(u);
@@ -188,7 +191,7 @@ function stop() {
 }
 
 function state(): TabState {
-  return { host: siteKey(location.hostname), lang: pageLang, active, units: units.size, done, failed, missing: [...missing] };
+  return { host: siteKey(location.hostname), lang: pageLang, active, units: units.size, done, cached, failed, missing: [...missing] };
 }
 
 /** 页面语言：先信 <html lang>，没写就取一段正文问原生侧 */

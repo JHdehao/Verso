@@ -22,5 +22,5 @@
       "description": "翻译此页 / 显示原文"
     }
   },
-  "permissions": ["nativeMessaging", "storage"]
+  "permissions": ["nativeMessaging", "storage", "unlimitedStorage"]
 }

@@ -39,6 +39,10 @@
   <details>
     <summary>设置</summary>
     <label class="row">
+      <span>自动翻译网页<br><small>按上面的语言 / 站点规则自动翻译；关掉后只在点「翻译此页」时翻译</small></span>
+      <input type="checkbox" id="auto" class="switch">
+    </label>
+    <label class="row">
       <span>译成</span>
       <select id="target"></select>
     </label>
@@ -49,6 +53,11 @@
         <option value="0">快速</option>
       </select>
     </label>
+    <label class="row">
+      <span>缓存译文<br><small id="cacheInfo">回访页面直接出译文</small></span>
+      <input type="checkbox" id="cache" class="switch">
+    </label>
+    <p class="note"><button id="cacheClear" class="link">清除缓存</button></p>
     <button id="selftest" class="link">自检</button>
     <pre id="selftestOut" hidden></pre>
   </details>

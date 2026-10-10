@@ -23,8 +23,10 @@ async function refresh() {
 }
 
 function render() {
-  const { target, fluent } = rules.settings;
+  const { target, fluent, auto, cache } = rules.settings;
   $<HTMLSelectElement>('target').value = target;
+  $<HTMLInputElement>('auto').checked = auto;
+  $<HTMLInputElement>('cache').checked = cache;
   $<HTMLSelectElement>('fluent').value = fluent ? '1' : '0';
   $('page').hidden = !tab;
   $('unavailable').hidden = !!tab;
@@ -36,7 +38,7 @@ function render() {
   toggle.textContent = tab.active ? '显示原文' : '翻译此页';
   toggle.classList.toggle('on', tab.active);
   $('status').textContent = tab.active
-    ? `已翻译 ${tab.done} 段${tab.failed ? `，${tab.failed} 段失败` : ''}，滚动时继续翻译`
+    ? `已翻译 ${tab.done} 段${tab.cached ? `（缓存 ${tab.cached}）` : ''}${tab.failed ? `，${tab.failed} 段失败` : ''}，滚动时继续翻译`
     : '';
 
   $('langName').textContent = lang ? name(lang) : '此语言';
@@ -49,6 +51,11 @@ function render() {
   const need = tab.missing[0];
   $('need').hidden = !need;
   if (need) $('needText').textContent = `还没有下载「${name(need)} → ${name(target)}」语言包。`;
+}
+
+async function cacheInfo() {
+  const r = await api.runtime.sendMessage({ bg: 'cache-stat' }).catch(() => undefined);
+  $('cacheInfo').textContent = r?.ok ? `已用 ${(r.bytes / 2 ** 20).toFixed(1)} MB / 200 MB` : '缓存不可用';
 }
 
 async function selftest() {
@@ -108,6 +115,15 @@ async function main() {
     window.close();
   };
   $('selftest').onclick = selftest;
+  $<HTMLInputElement>('auto').onchange = e =>
+    save({ settings: { ...rules.settings, auto: (e.target as HTMLInputElement).checked } });
+  $<HTMLInputElement>('cache').onchange = e =>
+    save({ settings: { ...rules.settings, cache: (e.target as HTMLInputElement).checked } });
+  $('cacheClear').onclick = async () => {
+    await api.runtime.sendMessage({ bg: 'cache-clear' }).catch(() => {});
+    cacheInfo();
+  };
+  cacheInfo();
 
   // 没有 Apple 智能时「流畅」会被系统静默降级，干脆标灰并切到「快速」
   const caps: CapabilitiesResponse = await api.runtime.sendMessage({ op: 'capabilities' }).catch(() => ({ ok: false }));

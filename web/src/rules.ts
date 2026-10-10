@@ -19,14 +19,15 @@ export const siteKey = (host: string) => host.replace(/^www\./, '');
 export async function loadRules(): Promise<Rules> {
   const r = await api.storage.local.get(['settings', 'sites', 'langs']);
   return {
-    settings: { target: defaultTarget(), fluent: true, ...r.settings },
+    settings: { target: defaultTarget(), fluent: true, auto: true, cache: true, ...r.settings },
     sites: r.sites ?? {},
     langs: r.langs ?? [],
   };
 }
 
-/** 站点规则优先，其次是「永远翻译某种语言」 */
+/** 总开关关掉就都不自动翻；否则站点规则优先，其次是「永远翻译某种语言」 */
 export function wants(rules: Rules, host: string, lang?: string): boolean {
+  if (!rules.settings.auto) return false;
   const site = rules.sites[siteKey(host)];
   if (site) return site === 'always';
   return !!lang && lang !== rules.settings.target && rules.langs.includes(lang);
