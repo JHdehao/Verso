@@ -85,45 +85,65 @@ actor Translator {
         return (results, missing)
     }
 
-    /// 自检：同一句带链接 / 行内代码的英文，槽位编号分别用自定义属性和链接属性携带，两档译法各翻一次，看格式能不能保住
+    /// 自检：同一句带链接 / 行内代码的英文，分别走单句 translate(AttributedString)（苹果文档示例的用法）和批量接口，
+    /// 槽位编号用自定义属性 / 链接属性 / 加粗携带，两档译法各翻一次，看哪条路能把格式带回来
     func diagnose(target: String) async -> [String] {
         let parts: [(String, Int, Bool)] = [
             ("Read the ", 0, false), ("documentation", 1, false), (" before you ", 2, false),
             ("start", 3, false), (", then run ", 4, false), ("npm install", 5, true), (".", 6, false),
         ]
-        let source = Locale.Language(identifier: "en")
+        enum Carrier: String, CaseIterable { case slot = "自定义属性", link = "链接属性", bold = "加粗" }
+        func source(_ carrier: Carrier) -> AttributedString {
+            var text = AttributedString()
+            for (piece, slot, skip) in parts {
+                var run = AttributedString(piece)
+                switch carrier {
+                case .slot: run[VersoSlotAttribute.self] = slot
+                case .link: run.link = URL(string: "verso:\(slot)")
+                case .bold: if slot == 1 || slot == 3 { run.inlinePresentationIntent = .stronglyEmphasized }
+                }
+                if skip { run[AttributeScopes.TranslationAttributes.SkipTranslationAttribute.self] = true }
+                text.append(run)
+            }
+            return text
+        }
+        func describe(_ response: TranslationSession.Response, _ carrier: Carrier) -> String {
+            guard let attributed = response.attributedTargetText else { return "无属性: \(response.targetText)" }
+            var out = ""
+            for run in attributed.runs {
+                let piece = String(attributed[run.range].characters)
+                switch carrier {
+                case .slot: out += run[VersoSlotAttribute.self].map { "[\($0)]\(piece)" } ?? piece
+                case .link: out += run.link.flatMap { Int($0.absoluteString.dropFirst(6)) }.map { "[\($0)]\(piece)" } ?? piece
+                case .bold: out += run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true ? "**\(piece)**" : piece
+                }
+            }
+            return out
+        }
+        let sourceLanguage = Locale.Language(identifier: "en")
         let targetLanguage = Locale.Language(identifier: target)
         var lines: [String] = []
         for fluent in [false, true] {
-            let session = TranslationSession(installedSource: source, target: targetLanguage, preferredStrategy: fluent ? .highFidelity : .lowLatency)
-            for useLink in [false, true] {
-                let label = "\(fluent ? "流畅" : "快速")/\(useLink ? "链接属性" : "自定义属性")"
-                var text = AttributedString()
-                for (piece, slot, skip) in parts {
-                    var run = AttributedString(piece)
-                    if useLink { run.link = URL(string: "verso:\(slot)") } else { run[VersoSlotAttribute.self] = slot }
-                    if skip { run[AttributeScopes.TranslationAttributes.SkipTranslationAttribute.self] = true }
-                    text.append(run)
-                }
+            let session = TranslationSession(installedSource: sourceLanguage, target: targetLanguage, preferredStrategy: fluent ? .highFidelity : .lowLatency)
+            let mode = fluent ? "流畅" : "快速"
+            for carrier in Carrier.allCases {
                 let start = Date()
                 do {
-                    let responses = try await session.translations(from: [TranslationSession.Request(sourceText: text, clientIdentifier: "d")])
-                    let ms = Int(Date().timeIntervalSince(start) * 1000)
-                    guard let response = responses.first else { lines.append("\(label) \(ms)ms 空结果"); continue }
-                    guard let attributed = response.attributedTargetText else {
-                        lines.append("\(label) \(ms)ms 无属性: \(response.targetText)")
-                        continue
-                    }
-                    var out = ""
-                    for run in attributed.runs {
-                        let piece = String(attributed[run.range].characters)
-                        let slot: Int? = useLink ? run.link.flatMap { Int($0.absoluteString.dropFirst(6)) } : run[VersoSlotAttribute.self]
-                        out += slot.map { "[\($0)]\(piece)" } ?? piece
-                    }
-                    lines.append("\(label) \(ms)ms \(out)")
+                    let response = try await session.translate(source(carrier))
+                    lines.append("\(mode)/单句/\(carrier.rawValue) \(Int(Date().timeIntervalSince(start) * 1000))ms \(describe(response, carrier))")
                 } catch {
-                    lines.append("\(label) 失败: \(error)")
+                    lines.append("\(mode)/单句/\(carrier.rawValue) 失败: \(error)")
                 }
+            }
+            let start = Date()
+            do {
+                var described = "空结果"
+                for try await response in session.translate(batch: [TranslationSession.Request(sourceText: source(.slot), clientIdentifier: "d")]) {
+                    described = describe(response, .slot)
+                }
+                lines.append("\(mode)/批量序列/自定义属性 \(Int(Date().timeIntervalSince(start) * 1000))ms \(described)")
+            } catch {
+                lines.append("\(mode)/批量序列/自定义属性 失败: \(error)")
             }
         }
         return lines
