@@ -1,4 +1,6 @@
 import type { CapabilitiesResponse, DiagResponse, Rules, Run, TabState, TranslateResponse } from './protocol';
+import { LIMIT } from './cache';
+import { download } from './local';
 import { api, LANGUAGES, languageName, loadRules, siteKey } from './rules';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -58,8 +60,8 @@ function render() {
 
 async function cacheInfo() {
   const r = await api.runtime.sendMessage({ bg: 'cache-stat' }).catch(() => undefined);
-  const used = !r?.ok ? '' : r.bytes < 2 ** 20 ? `${Math.ceil(r.bytes / 1024)} KB` : `${(r.bytes / 2 ** 20).toFixed(1)} MB`;
-  $('cacheInfo').textContent = used ? `已用 ${used} / 200 MB` : '缓存不可用';
+  const mb = (n: number) => (n < 2 ** 20 ? `${Math.ceil(n / 1024)} KB` : n < 2 ** 30 ? `${(n / 2 ** 20).toFixed(1)} MB` : `${(n / 2 ** 30).toFixed(1)} GB`);
+  $('cacheInfo').textContent = r?.ok ? `已用 ${mb(r.bytes)} / ${mb(LIMIT)}` : '缓存不可用';
 }
 
 async function selftest() {
@@ -67,8 +69,8 @@ async function selftest() {
   out.hidden = false;
   out.textContent = '翻译中…';
   const runs: Run[] = [
-    { t: 'Read the ', s: 0 }, { t: 'documentation', s: 1 }, { t: ' before you ', s: 2 },
-    { t: 'start', s: 3 }, { t: ', then run ', s: 4 }, { t: 'npm install', s: 5, k: 1 }, { t: '.', s: 6 },
+    { t: 'Read the ', s: 0 }, { t: 'documentation', s: 1, n: 1 }, { t: ' before you ', s: 2 },
+    { t: 'start', s: 3, n: 1 }, { t: ', then run ', s: 4 }, { t: 'npm install', s: 5, k: 1 }, { t: '.', s: 6 },
   ];
   const res: TranslateResponse = await api.runtime
     .sendMessage({ op: 'translate', target: rules.settings.target, fluent: rules.settings.fluent, hint: 'en', units: [{ id: 'test', runs }] })
@@ -94,6 +96,12 @@ async function selftest() {
 
 async function main() {
   rules = await loadRules();
+  if (__CHROMIUM__) {
+    // 只有一档模型，「译法」没得选；说明文字换成 Chromium 的
+    $('fluent').closest('label')!.hidden = true;
+    $('download').textContent = '下载语言包';
+    $('unavailable').textContent = '这个页面不能翻译（浏览器内部页面、扩展商店或本地文件）。';
+  }
   const target = $<HTMLSelectElement>('target');
   for (const code of LANGUAGES) target.add(new Option(name(code), code));
   [tabId] = (await api.tabs.query({ active: true, currentWindow: true })).map((t: { id?: number }) => t.id);
@@ -119,11 +127,26 @@ async function main() {
   target.onchange = () => save({ settings: { ...rules.settings, target: target.value } });
   $<HTMLSelectElement>('fluent').onchange = e =>
     save({ settings: { ...rules.settings, fluent: (e.target as HTMLSelectElement).value === '1' } });
-  $('download').onclick = () => {
+  $('download').onclick = async () => {
     const src = tab?.missing[0];
     if (!src) return;
-    api.tabs.update(tabId, { url: `verso://download?src=${src}&tgt=${rules.settings.target}` });
-    window.close();
+    if (!__CHROMIUM__) {
+      api.tabs.update(tabId, { url: `verso://download?src=${src}&tgt=${rules.settings.target}` });
+      window.close();
+      return;
+    }
+    // Chromium：内置翻译的语言包只能在用户点击后下载，弹窗里就地下，下完重载页面
+    const btn = $<HTMLButtonElement>('download');
+    btn.disabled = true;
+    try {
+      await download(src, rules.settings.target, p => { btn.textContent = `下载中 ${Math.round(p * 100)}%`; });
+      api.tabs.reload(tabId);
+      window.close();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '重试下载';
+      $('needText').textContent = `下载失败：${e}`;
+    }
   };
   $('selftest').onclick = selftest;
   $<HTMLInputElement>('auto').onchange = e =>
@@ -143,7 +166,7 @@ async function main() {
 
   // 没有 Apple 智能时「流畅」会被系统静默降级，干脆标灰并切到「快速」
   const caps: CapabilitiesResponse = await api.runtime.sendMessage({ op: 'capabilities' }).catch(() => ({ ok: false }));
-  if (caps.ok && caps.fluent === false) {
+  if (caps.ok && caps.fluent === false && !__CHROMIUM__) {
     const fluentOption = $<HTMLSelectElement>('fluent').options[0];
     fluentOption.disabled = true;
     fluentOption.textContent = `流畅（${caps.reason ?? 'Apple 智能不可用'}）`;

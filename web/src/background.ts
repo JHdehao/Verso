@@ -1,9 +1,10 @@
-// 中转 + 跨页面缓存：内容脚本和弹窗不能直接跟原生扩展进程说话
+// 中转 + 跨页面缓存：内容脚本和弹窗不能直接跟原生扩展进程说话（Chromium 版没有原生进程，在这里直接用本地翻译）
 import { idbStore, lookup, translateCached, warm } from './cache';
+import { local } from './local';
 import type { LookupRequest, TranslateRequest, TranslateResponse } from './protocol';
 import { api, loadRules, siteKey } from './rules';
 
-const native = (msg: unknown): Promise<TranslateResponse> =>
+const native = (msg: any): Promise<TranslateResponse> => __CHROMIUM__ ? local(msg) :
   api.runtime.sendNativeMessage('application.id', msg).then(
     (r: any) => r ?? { ok: false, error: '原生侧没有回复' },
     (e: any) => ({ ok: false, error: String(e?.message ?? e) }),

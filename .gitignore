@@ -6,3 +6,4 @@ Extension/Info.plist
 build/
 out/
 .DS_Store
+dist/

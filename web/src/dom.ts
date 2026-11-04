@@ -248,7 +248,7 @@ function atomText(el: Element) {
 export function serialize(unit: Unit): Run[] {
   const runs = unit.slots.map((s, i): Run =>
     s.atom ? { t: atomText(s.node as Element), s: i, k: 1 }
-      : { t: (s.node as Text).data.replace(/\s+/g, ' '), s: i, ...(s.hidden ? { k: 1 as const } : {}) });
+      : { t: (s.node as Text).data.replace(/\s+/g, ' '), s: i, ...(s.hidden ? { k: 1 as const } : s.chain.length ? { n: 1 as const } : {}) });
   // 整段首尾的空白（缩进、换行）不送去翻译
   const first = runs.find(r => !r.k), last = runs.findLast(r => !r.k);
   if (first) first.t = first.t.trimStart();

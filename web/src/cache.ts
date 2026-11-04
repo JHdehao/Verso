@@ -4,9 +4,10 @@ import type { Run, TranslateRequest, TranslateResponse, UnitRequest, UnitResult 
 
 /** 改了 serialize / merge / Swift 对齐逻辑就 +1，旧条目不再命中，按 LRU 老化掉 */
 export const CACHE_V = 2;
-export const LIMIT = 200 * 2 ** 20;
-/** 超限后删到这里，留回差，免得每次写入都淘汰 */
-export const KEEP = 180 * 2 ** 20;
+/** 上限：iOS 200 MB（手机存储紧、R6 配额未验证）；电脑上的 Chromium 版 2 GB（有 unlimitedStorage，约几百万段） */
+export const LIMIT = (typeof __CHROMIUM__ !== 'undefined' && __CHROMIUM__ ? 2048 : 200) * 2 ** 20;
+/** 超限后删到这里（上限的 90%），留回差，免得每次写入都淘汰 */
+export const KEEP = LIMIT * 0.9;
 
 /** r = null 表示已是目标语言；d = 最近使用的天数戳；n = 估算字节 */
 export type Entry = { r: Run[] | null; src?: string; d: number; n: number };

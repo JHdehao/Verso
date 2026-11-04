@@ -1,7 +1,10 @@
-// 内容脚本 ⇄ 后台 ⇄ 原生扩展进程之间的消息格式（Swift 侧见 Shared/Translator.swift）
+// 内容脚本 ⇄ 后台 ⇄ 原生扩展进程之间的消息格式（Swift 侧见 Shared/Translator.swift；Chromium 版在后台直接处理，见 local.ts）
 
-/** 一段文字：s = 段内槽位编号（-1 表示译文里对不上号的文字），k = 不翻译（行内代码、换行等） */
-export type Run = { t: string; s: number; k?: 1 };
+/**
+ * 一段文字：s = 段内槽位编号（-1 表示译文里对不上号的文字），k = 不翻译（行内代码、换行等），
+ * n = 在行内元素里（Chromium 版据此给这段包标签，苹果框架不用）
+ */
+export type Run = { t: string; s: number; k?: 1; n?: 1 };
 
 export type UnitRequest = { id: string; runs: Run[] };
 
