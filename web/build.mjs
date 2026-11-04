@@ -9,7 +9,10 @@ const out = fileURLToPath(new URL(chromium ? '../dist/chromium/' : '../Extension
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 await build({
-  entryPoints: { content: 'src/content.ts', background: 'src/background.ts', popup: 'src/popup.ts' },
+  entryPoints: {
+    content: 'src/content.ts', background: 'src/background.ts', popup: 'src/popup.ts',
+    ...(chromium ? { offscreen: 'src/offscreen.ts', sandbox: 'src/sandbox.ts' } : {}),
+  },
   bundle: true,
   minify: !process.argv.includes('--dev'),
   format: 'iife',
@@ -21,11 +24,13 @@ await build({
 });
 await cp('static', out, { recursive: true });
 if (chromium) {
-  // 同一份清单改三处：后台改 service_worker、去掉 nativeMessaging、Translator API 138 起才有
+  // 同一份清单改几处：后台改 service_worker、去掉 nativeMessaging、Translator API 138 起才有、翻译池要离屏文档 + 沙箱页面
   const manifest = JSON.parse(await readFile('static/manifest.json', 'utf8'));
   manifest.description = '用浏览器内置的本地翻译模型，把网页原样译成你的语言，并记住哪些网站要自动翻译。';
   manifest.background = { service_worker: 'background.js' };
-  manifest.permissions = manifest.permissions.filter(p => p !== 'nativeMessaging');
+  manifest.permissions = [...manifest.permissions.filter(p => p !== 'nativeMessaging'), 'offscreen'];
+  manifest.sandbox = { pages: ['sandbox.html'] };
   manifest.minimum_chrome_version = '138';
   await writeFile(`${out}manifest.json`, JSON.stringify(manifest, null, 2));
+  for (const page of ['offscreen', 'sandbox']) await writeFile(`${out}${page}.html`, `<!doctype html><meta charset="utf-8"><script src="${page}.js" defer></script>\n`);
 }

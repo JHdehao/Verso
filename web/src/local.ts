@@ -1,7 +1,9 @@
-// Chromium 版的「原生」：后台 Service Worker 里直接用浏览器内置的本地翻译（Translator API，TranslateKit 离线模型）和 CLD3 语言识别。
+// Chromium 版的「原生」：后台 Service Worker 里用浏览器内置的本地翻译（Translator API，TranslateKit 离线模型）和 CLD3 语言识别，
+// 翻译本身交给多进程翻译池并行（pool.ts）。
 // 对外接口与 Swift 侧（Extension/Sources/SafariWebExtensionHandler.swift）一致，content / cache 不分平台。
 // Translator 只吃纯文本，格式靠标签带：行内元素的槽包成 <xN>…</xN>、不翻译的槽换成 <kN/>，模型会跟着语序挪标签（实测）
 import type { DiagResponse, NativeRequest, Run, TranslateRequest, TranslateResponse, UnitRequest, UnitResult } from './protocol';
+import { call, SIZE } from './pool.ts';
 import { api, baseLang } from './rules.ts';
 
 type Availability = 'unavailable' | 'downloadable' | 'downloading' | 'available';
@@ -73,24 +75,31 @@ async function detect(text: string, hint?: string): Promise<string | undefined> 
   return baseLang(top && top !== 'und' && (sure || !hint) ? top : hint ?? top);
 }
 
-const kits = new Map<string, Promise<Kit>>();
-/** 确认过 available 的语言对：availability 每次都要跨进程问一次 */
-const ready = new Set<string>();
+/** 走翻译池；池出错（离屏文档起不来等）就退回本进程直连，慢但能用 */
+function pooled(src: string, tgt: string): Kit {
+  const o = pairOf(src, tgt);
+  let direct: Promise<Kit> | undefined;
+  return {
+    async translate(text) {
+      const r = await call({ pool: 'translate', src: o.sourceLanguage, tgt: o.targetLanguage, text }).catch(e => ({ ok: false, error: String(e), text: undefined }));
+      if (r.ok) return r.text ?? '';
+      direct ??= Translator.create(o);
+      return (await direct).translate(text);
+    },
+  };
+}
 
+const kits = new Map<string, Kit>();
+
+/** availability 确认过 available 才给 Kit；每次都要跨进程问一次，所以确认过的语言对记下来 */
 async function kit(src: string, tgt: string): Promise<Kit | Availability> {
   const key = `${src}>${tgt}`;
-  if (!ready.has(key)) {
+  if (!kits.has(key)) {
     const a = await Translator.availability(pairOf(src, tgt));
     if (a !== 'available') return a;
-    ready.add(key);
+    kits.set(key, pooled(src, tgt));
   }
-  let k = kits.get(key);
-  if (!k) {
-    k = Translator.create(pairOf(src, tgt));
-    kits.set(key, k);
-    k.catch(() => { kits.delete(key); ready.delete(key); });
-  }
-  return k;
+  return kits.get(key)!;
 }
 
 async function one(k: Kit, u: UnitRequest, src: string): Promise<UnitResult> {
@@ -143,8 +152,8 @@ async function translate(msg: TranslateRequest): Promise<TranslateResponse> {
       if (!hint || src === hint) missing.add(src);
       results.push(...group.map(u => ({ id: u.id, src, err: 'needsDownload' })));
     } else {
-      // 内置翻译服务本身串行（实测并发 4 路与逐句总耗时相同），逐句发
-      for (const u of group) results.push(await one(k, u, src));
+      // 全部同时发，翻译池按忙闲分给各进程
+      results.push(...await Promise.all(group.map(u => one(k as Kit, u, src))));
       lap('translate');
     }
   }
@@ -170,15 +179,20 @@ async function diagnose(target: string): Promise<DiagResponse> {
   if (a !== 'available') return { ok: true, lines };
   let t = performance.now();
   const k = await kit('en', tgt) as Kit;
-  lines.push(`会话：${Math.round(performance.now() - t)} ms${kits.size > 1 ? '' : '（本进程首次）'}`);
+  const warmed = await call({ pool: 'warm', src: 'en', tgt: kitLang(tgt) }).catch(e => ({ ok: false, error: String(e) }));
+  lines.push(`翻译池 ${SIZE} 进程就绪：${Math.round(performance.now() - t)} ms${warmed.ok ? '' : `（失败：${warmed.error}，退回单进程）`}`);
   const runs: Run[] = [{ t: 'Click ', s: 0 }, { t: 'here', s: 1, n: 1 }, { t: ' to open ', s: 2 }, { t: 'npm', s: 3, k: 1 }, { t: ' in the ', s: 4 }, { t: 'editor', s: 5, n: 1 }, { t: '.', s: 6 }];
   t = performance.now();
   const raw = await k.translate(encode(runs)!);
   const back = decode(raw, runs);
   lines.push(`带格式（${Math.round(performance.now() - t)} ms）：${raw}${back ? '' : ' → 对不上号，退回纯文本'}`);
+  const xs = [...SAMPLES, ...SAMPLES.map(s => `${s} (2)`)];
   t = performance.now();
-  for (const s of SAMPLES) await k.translate(s);
-  lines.push(`吞吐 ${SAMPLES.length} 句逐句：${Math.round(performance.now() - t)} ms`);
+  for (const s of xs) await k.translate(s);
+  const serial = Math.round(performance.now() - t);
+  t = performance.now();
+  await Promise.all(xs.map(s => k.translate(`${s} `)));
+  lines.push(`吞吐 ${xs.length} 句：逐句 ${serial} ms / 并行 ${Math.round(performance.now() - t)} ms`);
   return { ok: true, lines };
 }
 
@@ -186,9 +200,12 @@ export async function local(msg: NativeRequest): Promise<any> {
   try {
     switch (msg.op) {
       case 'translate': return await translate(msg);
-      case 'warm':
-        if (msg.hint && baseLang(msg.hint) !== baseLang(msg.target)) await kit(baseLang(msg.hint)!, baseLang(msg.target) ?? msg.target);
+      case 'warm': {
+        // 叫起翻译池并让每个进程把这对语言的模型加载好
+        const src = baseLang(msg.hint), tgt = baseLang(msg.target) ?? msg.target;
+        if (src && src !== tgt && typeof await kit(src, tgt) !== 'string') await call({ pool: 'warm', src: kitLang(src), tgt: kitLang(tgt) });
         return { ok: true };
+      }
       case 'detect': {
         const lang = await detect(msg.text);
         return lang ? { ok: true, lang } : { ok: false, error: '无法识别' };
